@@ -5,8 +5,16 @@ using System.Threading.Tasks;
 
 namespace BTCPayServer.Models.InvoicingModels
 {
+    public class CheckoutUIPaymentMethodSettings
+    {
+        public string ExtensionPartial { get; set; }
+        public string CheckoutBodyVueComponentName { get; set; }
+        public string CheckoutHeaderVueComponentName { get; set; }
+        public string NoScriptPartialName { get; set; }
+    }
     public class PaymentModel
     {
+        public CheckoutUIPaymentMethodSettings UISettings;
         public class AvailableCrypto
         {
             public string PaymentMethodId { get; set; }
@@ -20,6 +28,7 @@ namespace BTCPayServer.Models.InvoicingModels
         public string CustomCSSLink { get; set; }
         public string CustomLogoLink { get; set; }
         public string DefaultLang { get; set; }
+        public bool LightningAmountInSatoshi { get; set; }
         public List<AvailableCrypto> AvailableCryptos { get; set; } = new List<AvailableCrypto>();
         public bool IsModal { get; set; }
         public bool IsLightning { get; set; }
@@ -65,5 +74,7 @@ namespace BTCPayServer.Models.InvoicingModels
         public string CoinSwitchMode { get; set; }
         public string CoinSwitchMerchantId { get; set; }
         public string RootPath { get; set; }
+        public decimal CoinSwitchAmountMarkupPercentage { get; set; }
+        public bool RedirectAutomatically { get; set; }
     }
 }

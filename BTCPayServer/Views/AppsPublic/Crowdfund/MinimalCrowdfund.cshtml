@@ -131,11 +131,11 @@
                     <hr/>
                     <div class="row">
                         <div class="col-md-8 col-sm-12">
-                            <div class="card-text overflow-hidden">@Html.Raw(Model.Description)</div>
+                            <div class="card-text overflow-hidden">@Safe.Raw(Model.Description)</div>
                         </div>
                         <div class="col-md-4 col-sm-12">
                             <partial 
-                                name="Crowdfund/ContributeForm"
+                                name="/Views/AppsPublic/Crowdfund/ContributeForm.cshtml"
                                 model="@(new ContributeToCrowdfund()
                                               {
                                                   ViewCrowdfundViewModel = Model,

@@ -6,6 +6,7 @@ using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
 using BTCPayServer.Data;
+using BTCPayServer.Events;
 using BTCPayServer.Filters;
 using BTCPayServer.Models;
 using BTCPayServer.Models.PaymentRequestViewModels;
@@ -40,7 +41,7 @@ namespace BTCPayServer.Controllers
         private readonly PaymentRequestService _PaymentRequestService;
         private readonly EventAggregator _EventAggregator;
         private readonly CurrencyNameTable _Currencies;
-        private readonly HtmlSanitizer _htmlSanitizer;
+        private readonly InvoiceRepository _InvoiceRepository;
 
         public PaymentRequestController(
             InvoiceController invoiceController,
@@ -50,7 +51,7 @@ namespace BTCPayServer.Controllers
             PaymentRequestService paymentRequestService,
             EventAggregator eventAggregator,
             CurrencyNameTable currencies,
-            HtmlSanitizer htmlSanitizer)
+            InvoiceRepository invoiceRepository)
         {
             _InvoiceController = invoiceController;
             _UserManager = userManager;
@@ -59,7 +60,7 @@ namespace BTCPayServer.Controllers
             _PaymentRequestService = paymentRequestService;
             _EventAggregator = eventAggregator;
             _Currencies = currencies;
-            _htmlSanitizer = htmlSanitizer;
+            _InvoiceRepository = invoiceRepository;
         }
 
         [HttpGet]
@@ -148,20 +149,24 @@ namespace BTCPayServer.Controllers
 
             blob.Title = viewModel.Title;
             blob.Email = viewModel.Email;
-            blob.Description = _htmlSanitizer.Sanitize(viewModel.Description);
+            blob.Description = viewModel.Description;
             blob.Amount = viewModel.Amount;
-            blob.ExpiryDate = viewModel.ExpiryDate;
+            blob.ExpiryDate = viewModel.ExpiryDate?.ToUniversalTime();
             blob.Currency = viewModel.Currency;
             blob.EmbeddedCSS = viewModel.EmbeddedCSS;
             blob.CustomCSSLink = viewModel.CustomCSSLink;
             blob.AllowCustomPaymentAmounts = viewModel.AllowCustomPaymentAmounts;
 
             data.SetBlob(blob);
+            if (string.IsNullOrEmpty(id))
+            {
+                data.Created = DateTimeOffset.UtcNow;
+            }
             data = await _PaymentRequestRepository.CreateOrUpdatePaymentRequest(data);
             _EventAggregator.Publish(new PaymentRequestUpdated()
             {
                 Data = data,
-                PaymentRequestId = data.Id
+                PaymentRequestId = data.Id,
             });
 
             return RedirectToAction("EditPaymentRequest", new {id = data.Id, StatusMessage = "Saved"});
@@ -182,7 +187,7 @@ namespace BTCPayServer.Controllers
             return View("Confirm", new ConfirmModel()
             {
                 Title = $"Remove Payment Request",
-                Description = $"Are you sure to remove access to remove payment request '{blob.Title}' ?",
+                Description = $"Are you sure you want to remove access to the payment request '{blob.Title}' ?",
                 Action = "Delete"
             });
         }
@@ -212,7 +217,7 @@ namespace BTCPayServer.Controllers
         [HttpGet]
         [Route("{id}")]
         [AllowAnonymous]
-        public async Task<IActionResult> ViewPaymentRequest(string id)
+        public async Task<IActionResult> ViewPaymentRequest(string id, string statusMessage = null)
         {
             var result = await _PaymentRequestService.GetPaymentRequest(id, GetUserId());
             if (result == null)
@@ -220,6 +225,8 @@ namespace BTCPayServer.Controllers
                 return NotFound();
             }
             result.HubPath = PaymentRequestHub.GetHubPath(this.Request);
+            result.StatusMessage = statusMessage;
+            
             return View(result);
         }
 
@@ -313,7 +320,39 @@ namespace BTCPayServer.Controllers
             }
         }
 
+        [HttpGet]
+        [Route("{id}/cancel")]
+        public async Task<IActionResult> CancelUnpaidPendingInvoice(string id, bool redirect = true)
+        {
+            var result = await _PaymentRequestService.GetPaymentRequest(id, GetUserId());
+            if (result == null )
+            {
+                return NotFound();
+            }
 
+            var invoice = result.Invoices.SingleOrDefault(requestInvoice =>
+                requestInvoice.Status.Equals(InvoiceState.ToString(InvoiceStatus.New),StringComparison.InvariantCulture) && !requestInvoice.Payments.Any());
+
+            if (invoice == null )
+            {
+                return BadRequest("No unpaid pending invoice to cancel");
+            }
+            
+            await _InvoiceRepository.UpdatePaidInvoiceToInvalid(invoice.Id);
+            _EventAggregator.Publish(new InvoiceEvent(await _InvoiceRepository.GetInvoice(invoice.Id), 1008, InvoiceEvent.MarkedInvalid));
+
+            if (redirect)
+            {
+                return RedirectToAction(nameof(ViewPaymentRequest), new
+                {
+                    Id = id,
+                    StatusMessage = "Payment cancelled"
+                });
+            }
+
+            return Ok("Payment cancelled");
+        }
+        
         private string GetUserId()
         {
             return _UserManager.GetUserId(User);

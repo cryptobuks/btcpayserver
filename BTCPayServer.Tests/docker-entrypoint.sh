@@ -1,5 +1,9 @@
 #!/bin/sh
 set -e
 
-dotnet test --filter Fast=Fast --no-build
-dotnet test --filter Integration=Integration --no-build -v n
+FILTERS=" "
+if [[ "$TEST_FILTERS" ]]; then
+FILTERS="--filter $TEST_FILTERS"
+fi
+
+dotnet test $FILTERS --no-build -v n

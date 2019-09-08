@@ -1,4 +1,5 @@
-﻿@model UpdatePointOfSaleViewModel
+﻿@addTagHelper *, BundlerMinifier.TagHelpers
+@model UpdatePointOfSaleViewModel
 @{
     ViewData["Title"] = "Update Point of Sale";
 }
@@ -6,23 +7,22 @@
     <div class="modal" id="product-modal" tabindex="-1" role="dialog">
         <div class="modal-dialog" role="document">
             <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title">Product management</h5>
-                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-                <span aria-hidden="true">&times;</span>
-                </button>
-            </div>
-            <div class="modal-body">
-                <p>Modal body text goes here.</p>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
-                <button type="button" class="js-product-save btn btn-primary">Save Changes</button>
-            </div>
+                <div class="modal-header">
+                    <h5 class="modal-title">Product management</h5>
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">&times;</span>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <p>Modal body text goes here.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                    <button type="button" class="js-product-save btn btn-primary">Save Changes</button>
+                </div>
             </div>
         </div>
     </div>
-
     <div class="container">
         <div class="row">
             <div class="col-lg-12 text-center">
@@ -30,14 +30,18 @@
                 <hr class="primary">
             </div>
         </div>
-        <div class="row">
-            <div class="col-lg-12 text-center">
-                <partial name="_StatusMessage" for="@TempData["TempDataProperty-StatusMessage"]" />
+        @if (TempData.ContainsKey("TempDataProperty-StatusMessage"))
+        {
+            <div class="row">
+                <div class="col-lg-12 text-center">
+                    <partial name="_StatusMessage" for="@TempData["TempDataProperty-StatusMessage"]" />
+                </div>
             </div>
-        </div>
+        }
         <div class="row">
             <div class="col-lg-12">
                 <form method="post">
+                    <input type="hidden" asp-for="StoreId" />
                     <div asp-validation-summary="ModelOnly" class="text-danger"></div>
                     <div class="form-group">
                         <label asp-for="Title" class="control-label"></label>*
@@ -52,18 +56,22 @@
                     <div class="form-group">
                         <label asp-for="EnableShoppingCart"></label>
                         <input asp-for="EnableShoppingCart" type="checkbox" class="form-check" />
+                        <span asp-validation-for="EnableShoppingCart" class="text-danger"></span>
                     </div>
                     <div class="form-group">
                         <label asp-for="ShowCustomAmount"></label>
                         <input asp-for="ShowCustomAmount" type="checkbox" class="form-check" />
+                        <span asp-validation-for="ShowCustomAmount" class="text-danger"></span>
                     </div>
                     <div class="form-group">
                         <label asp-for="ShowDiscount"></label>
                         <input asp-for="ShowDiscount" type="checkbox" class="form-check" />
+                        <span asp-validation-for="ShowDiscount" class="text-danger"></span>
                     </div>
                     <div class="form-group">
                         <label asp-for="EnableTips"></label>
                         <input asp-for="EnableTips" type="checkbox" class="form-check" />
+                        <span asp-validation-for="EnableTips" class="text-danger"></span>
                     </div>
                     <div class="form-group">
                         <label asp-for="ButtonText" class="control-label"></label>*
@@ -105,7 +113,40 @@
                         <span asp-validation-for="Template" class="text-danger"></span>
                     </div>
                     <div class="form-group">
-                        <input type="submit" class="btn btn-primary" value="Save Settings" />
+                        <label asp-for="NotificationUrl" class="control-label"></label>
+                        <input asp-for="NotificationUrl" class="form-control" />
+                        <span asp-validation-for="NotificationUrl" class="text-danger"></span>
+                    </div>
+                    <div class="form-group">
+                        <label asp-for="NotificationEmail" class="control-label"></label>
+                        @if (Model.NotificationEmailWarning)
+                        {
+                            <partial name="NotificationEmailWarning" model="@Model.StoreId" />
+                        }
+                        <input type="email" asp-for="NotificationEmail" class="form-control" />
+                        <span asp-validation-for="NotificationEmail" class="text-danger"></span>
+                    </div>
+                    <div class="form-group">
+                        <label asp-for="RedirectAutomatically" class="control-label"></label>*
+                        <select asp-for="RedirectAutomatically" asp-items="Model.RedirectAutomaticallySelectList" class="form-control"></select>
+                        <span asp-validation-for="RedirectAutomatically" class="text-danger"></span>
+                    </div>
+                    <div class="form-group">
+                        <label asp-for="Description" class="control-label"></label>
+                        <textarea asp-for="Description" rows="10" cols="40" class="form-control richtext"></textarea>
+                        <span asp-validation-for="Description" class="text-danger"></span>
+                    </div>
+                    <div class="form-group">
+                        <label asp-for="EmbeddedCSS" class="control-label"></label>
+                        <textarea asp-for="EmbeddedCSS" rows="10" cols="40" class="form-control"></textarea>
+                        <span asp-validation-for="EmbeddedCSS" class="text-danger"></span>
+                    </div>
+                    <input type="hidden" asp-for="NotificationEmailWarning" />
+                    <div class="form-group">
+                        <input type="submit" class="btn btn-primary" value="Save Settings" id="SaveSettings" />
+                        <a class="btn btn-secondary" target="_blank" asp-action="ListInvoices" asp-controller="Invoice" asp-route-searchterm="@Model.SearchTerm">Invoices</a>
+                        <a class="btn btn-secondary" target="_blank" asp-action="ViewPointOfSale" asp-controller="AppsPublic" asp-route-appId="@Model.Id" id="ViewApp">View App</a>
+                        <a class="btn btn-secondary" target="_blank" asp-action="ListApps">Back to the app list</a>
                     </div>
                     <div class="form-group">
                         <div class="accordion" id="accordian-dev-info">
@@ -117,7 +158,6 @@
                                         </button>
                                     </h2>
                                 </div>
-
                                 <div id="accordian-dev-info-embed-payment-button" class="collapse" aria-labelledby="accordian-dev-info-embed-payment-button-header" data-parent="#accordian-dev-info">
                                     <div class="card-body">
                                         <p>You can host point of sale buttons in an external website with the following code.</p>
@@ -139,7 +179,7 @@
                                     <h2 class="mb-0">
                                         <button class="btn btn-link collapsed" type="button" data-toggle="collapse" data-target="#accordian-dev-info-embed-pos-iframe" aria-expanded="false" aria-controls="accordian-dev-info-embed-pos-iframe">
                                             Embed POS with Iframe
-                                          
+
                                         </button>
                                     </h2>
                                 </div>
@@ -147,17 +187,17 @@
                                     <div class="card-body">
                                         You can embed the POS using an iframe
                                         @{
-                                            var iframe = $"<iframe src='{(Url.Action("ViewPointOfSale", "AppsPublic", new {appId = Model.Id}, Context.Request.Scheme))}' style='max-width: 100%; border: 0;'></iframe>";
+                                            var iframe = $"<iframe src='{(Url.Action("ViewPointOfSale", "AppsPublic", new { appId = Model.Id }, Context.Request.Scheme))}' style='max-width: 100%; border: 0;'></iframe>";
                                         }
                                         <pre><code class="html">@iframe</code></pre>
-                                        </div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="card">
                                 <div class="card-header" id="accordian-dev-info-notification-header">
                                     <h2 class="mb-0">
                                         <button class="btn btn-link collapsed" type="button" data-toggle="collapse" data-target="#accordian-dev-info-notification" aria-expanded="false" aria-controls="accordian-dev-info-notification">
-                                           Notification Url Callbacks
+                                            Notification Url Callbacks
                                         </button>
                                     </h2>
                                 </div>
@@ -172,26 +212,22 @@
                                                 <li>Verify that the <code>orderId</code> is from your backend, that the <code>price</code> is correct and that <code>status</code> is either <code>confirmed</code> or <code>complete</code></li>
                                                 <li>You can then ship your order</li>
                                             </ul>
-                                        </p> </div>
+                                        </p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
-
                     </div>
                 </form>
-                <a asp-action="ListApps">Back to the app list</a>
-                
-                
+
             </div>
         </div>
     </div>
 </section>
-
 @section Scripts {
     <link rel="stylesheet" href="~/vendor/highlightjs/default.min.css">
     <script src="~/vendor/highlightjs/highlight.min.js"></script>
     <script>hljs.initHighlightingOnLoad();</script>
-
     <script id="template-product-item" type="text/template">
         <div class="col-sm-4 col-md-3 mb-3">
             <div class="card">
@@ -204,43 +240,52 @@
             </div>
         </div>
     </script>
-
     <script id="template-product-content" type="text/template">
-    <div class="mb-3">
-        <input class="js-product-id" type="hidden" name="id" value="{id}">
-        <input class="js-product-index" type="hidden" name="index" value="{index}">
-        <div class="form-row">
-            <div class="col-sm-6">
-                <label>Title</label>*
-                <input type="text" class="js-product-title form-control mb-2" value="{title}" autofocus />
+        <div class="mb-3">
+            <input class="js-product-id" type="hidden" name="id" value="{id}">
+            <input class="js-product-index" type="hidden" name="index" value="{index}">
+            <div class="form-row">
+                <div class="col-sm-6">
+                    <label>Title</label>*
+                    <input type="text" class="js-product-title form-control mb-2" value="{title}" autofocus />
+                </div>
+                <div class="col-sm-3">
+                    <label>Price</label>*
+                    <input
+                        class="js-product-price form-control mb-2"
+                        inputmode="numeric"
+                        pattern="\d*"
+                        type="number"
+                        value="{price}" />
+                </div>
+                <div class="col-sm-3">
+                    <label>Custom price</label>
+                    <select class="js-product-custom form-control">
+                        {custom}
+                    </select>
+                </div>
             </div>
-            <div class="col-sm-3">
-                <label>Price</label>*
-                <input type="number" class="js-product-price form-control mb-2" value="{price}" />
+            <div class="form-row">
+                <div class="col">
+                    <label>Image</label>
+                    <input type="text" class="js-product-image form-control mb-2" value="{image}" />
+                </div>
             </div>
-            <div class="col-sm-3">
-                <label>Custom price</label>
-                <select class="js-product-custom form-control">
-                    {custom}
-                </select>
+            <div class="form-row">
+                <div class="col">
+                    <label>Description</label>
+                    <textarea rows="3" cols="40" class="js-product-description form-control mb-2">{description}</textarea>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="col">
+                    <label>Inventory (leave blank to not use inventory feature)</label>
+                    <input type="number" step="1" class="js-product-inventory form-control mb-2" value="{inventory}"/>
+                </div>
             </div>
         </div>
-        <div class="form-row">
-            <div class="col">
-                <label>Image</label>
-                <input type="text" class="js-product-image form-control mb-2" value="{image}" />
-            </div>
-        </div>
-        <div class="form-row">
-            <div class="col">
-                <label>Description</label>
-                <textarea rows="3" cols="40" class="js-product-description form-control mb-2">{description}</textarea>
-            </div>
-        </div>
-    </div>
     </script>
 
-    <script src="~/products/js/products.js"></script>
-    <script src="~/products/js/products.jquery.js"></script>
+    <bundle name="wwwroot/bundles/pos-admin-bundle.min.js"></bundle>
+    <bundle name="wwwroot/bundles/pos-admin-bundle.min.css"></bundle>
 }
-

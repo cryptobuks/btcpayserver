@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.Logging;
 using System.Threading;
@@ -11,7 +12,7 @@ using BTCPayServer.Payments;
 using BTCPayServer.Services.PaymentRequests;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
-using BTCPayServer.Services.Apps;
+using BTCPayServer.Data;
 using Microsoft.AspNetCore.Http;
 
 namespace BTCPayServer.PaymentRequest
@@ -23,6 +24,8 @@ namespace BTCPayServer.PaymentRequest
         public const string PaymentReceived = "PaymentReceived";
         public const string InfoUpdated = "InfoUpdated";
         public const string InvoiceError = "InvoiceError";
+        public const string CancelInvoiceError = "CancelInvoiceError";
+        public const string InvoiceCancelled = "InvoiceCancelled";
 
         public PaymentRequestHub(PaymentRequestController paymentRequestController)
         {
@@ -57,6 +60,23 @@ namespace BTCPayServer.PaymentRequest
                     break;
                 default:
                     await Clients.Caller.SendCoreAsync(InvoiceError, System.Array.Empty<object>());
+                    break;
+            }
+        }
+
+        public async Task CancelUnpaidPendingInvoice()
+        {
+            _PaymentRequestController.ControllerContext.HttpContext = Context.GetHttpContext();
+            var result =
+                await _PaymentRequestController.CancelUnpaidPendingInvoice(Context.Items["pr-id"].ToString(), false);
+            switch (result)
+            {
+                case OkObjectResult okObjectResult:
+                    await Clients.Group(Context.Items["pr-id"].ToString()).SendCoreAsync(InvoiceCancelled, System.Array.Empty<object>());
+                    break;
+                    
+                default:
+                    await Clients.Caller.SendCoreAsync(CancelInvoiceError, System.Array.Empty<object>());
                     break;
             }
         }
@@ -137,8 +157,7 @@ namespace BTCPayServer.PaymentRequest
                             {
                             data.GetValue(),
                             invoiceEvent.Payment.GetCryptoCode(),
-                            Enum.GetName(typeof(PaymentTypes),
-                                invoiceEvent.Payment.GetPaymentMethodId().PaymentType)
+                            invoiceEvent.Payment.GetPaymentMethodId().PaymentType.ToString()
                             });
                     }
 

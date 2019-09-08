@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Primitives;
+using NBitcoin;
 
 namespace BTCPayServer.Configuration
 {
@@ -56,6 +57,18 @@ namespace BTCPayServer.Configuration
             {
                 throw new NotSupportedException("Configuration value does not support time " + typeof(T).Name);
             }
+        }
+        
+        public static string GetDataDir(this IConfiguration configuration)
+        {
+            var networkType = DefaultConfiguration.GetNetworkType(configuration);
+            return GetDataDir(configuration, networkType);
+        }
+
+        public static string GetDataDir(this IConfiguration configuration, NetworkType networkType)
+        {
+            var defaultSettings = BTCPayDefaultSettings.GetDefaultSettings(networkType);
+            return configuration.GetOrDefault("datadir", defaultSettings.DefaultDataDirectory);
         }
     }
 }

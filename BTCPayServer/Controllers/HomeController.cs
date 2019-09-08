@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using BTCPayServer.Models;
@@ -8,20 +9,76 @@ using System.Net.Http;
 using Newtonsoft.Json.Linq;
 using NBitcoin;
 using Newtonsoft.Json;
+using BTCPayServer.Services;
+using BTCPayServer.HostedServices;
+using BTCPayServer.Services.Apps;
 
 namespace BTCPayServer.Controllers
 {
     public class HomeController : Controller
     {
+        private readonly CssThemeManager _cachedServerSettings;
+
         public IHttpClientFactory HttpClientFactory { get; }
 
-        public HomeController(IHttpClientFactory httpClientFactory)
+        public HomeController(IHttpClientFactory httpClientFactory, CssThemeManager cachedServerSettings)
         {
             HttpClientFactory = httpClientFactory;
+            _cachedServerSettings = cachedServerSettings;
         }
-        public IActionResult Index()
+
+        private async Task<ViewResult> GoToApp(string appId, AppType? appType)
         {
-            return View("Home");
+            if (appType.HasValue && !string.IsNullOrEmpty(appId))
+            {
+                switch (appType.Value)
+                {
+                    case AppType.Crowdfund:
+                    {
+                        var serviceProvider = HttpContext.RequestServices;
+                        var controller = (AppsPublicController)serviceProvider.GetService(typeof(AppsPublicController));
+                        controller.Url = Url;
+                        controller.ControllerContext = ControllerContext;
+                        var res = await controller.ViewCrowdfund(appId, null) as ViewResult;
+                        if (res != null)
+                        {
+                            res.ViewName = "/Views/AppsPublic/ViewCrowdfund.cshtml";
+                            return res; // return 
+                        }
+
+                        break;
+                    }
+
+                    case AppType.PointOfSale:
+                    {
+                        var serviceProvider = HttpContext.RequestServices;
+                        var controller = (AppsPublicController)serviceProvider.GetService(typeof(AppsPublicController));
+                        controller.Url = Url;
+                        controller.ControllerContext = ControllerContext;
+                        var res = await controller.ViewPointOfSale(appId) as ViewResult;
+                        if (res != null)
+                        {
+                            res.ViewName = "/Views/AppsPublic/ViewPointOfSale.cshtml";
+                            return res; // return 
+                        }
+
+                        break;
+                    }
+                }
+            }
+            return null;
+        }
+
+        public async Task<IActionResult> Index()
+        {
+            var matchedDomainMapping = _cachedServerSettings.DomainToAppMapping.FirstOrDefault(item =>
+                item.Domain.Equals(Request.Host.Host, StringComparison.InvariantCultureIgnoreCase));
+            if (matchedDomainMapping != null)
+            {
+                return await GoToApp(matchedDomainMapping.AppId, matchedDomainMapping.AppType) ?? View("Home"); 
+            }
+
+            return await GoToApp(_cachedServerSettings.RootAppId, _cachedServerSettings.RootAppType) ?? View("Home"); 
         }
 
         [Route("translate")]
@@ -80,20 +137,6 @@ namespace BTCPayServer.Controllers
                 return View(vm);
             }
             return View(vm);
-        }
-
-        public IActionResult About()
-        {
-            ViewData["Message"] = "Your application description page.";
-
-            return View();
-        }
-
-        public IActionResult Contact()
-        {
-            ViewData["Message"] = "Your contact page.";
-
-            return View();
         }
 
         public IActionResult Error()

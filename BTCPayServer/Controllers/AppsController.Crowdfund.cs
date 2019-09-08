@@ -5,6 +5,7 @@ using System.Text.Encodings.Web;
 using System.Threading.Tasks;
 using BTCPayServer.Models.AppViewModels;
 using BTCPayServer.Services.Apps;
+using BTCPayServer.Services.Mails;
 using Microsoft.AspNetCore.Mvc;
 
 namespace BTCPayServer.Controllers
@@ -33,7 +34,9 @@ namespace BTCPayServer.Controllers
             var settings = app.GetSettings<CrowdfundSettings>();
             var vm = new UpdateCrowdfundViewModel()
             {
+                NotificationEmailWarning = !await IsEmailConfigured(app.StoreDataId),
                 Title = settings.Title,
+                StoreId = app.StoreDataId,
                 Enabled = settings.Enabled,
                 EnforceTargetAmount = settings.EnforceTargetAmount,
                 StartDate = settings.StartDate,
@@ -127,15 +130,16 @@ namespace BTCPayServer.Controllers
                 Title = vm.Title,
                 Enabled = vm.Enabled,
                 EnforceTargetAmount = vm.EnforceTargetAmount,
-                StartDate = vm.StartDate,
+                StartDate = vm.StartDate?.ToUniversalTime(),
                 TargetCurrency = vm.TargetCurrency,
-                Description = _htmlSanitizer.Sanitize( vm.Description),
-                EndDate = vm.EndDate,
+                Description = vm.Description,
+                EndDate = vm.EndDate?.ToUniversalTime(),
                 TargetAmount = vm.TargetAmount,
                 CustomCSSLink = vm.CustomCSSLink,
                 MainImageUrl = vm.MainImageUrl,
                 EmbeddedCSS = vm.EmbeddedCSS,
                 NotificationUrl = vm.NotificationUrl,
+                NotificationEmail = vm.NotificationEmail,
                 Tagline = vm.Tagline,
                 PerksTemplate = vm.PerksTemplate,
                 DisqusEnabled = vm.DisqusEnabled,
@@ -152,7 +156,7 @@ namespace BTCPayServer.Controllers
 
             app.TagAllInvoices = vm.UseAllStoreInvoices;
             app.SetSettings(newSettings);
-            await UpdateAppSettings(app);
+            await _AppService.UpdateOrCreateApp(app);
 
             _EventAggregator.Publish(new AppUpdated()
             {

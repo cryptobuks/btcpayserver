@@ -5,7 +5,6 @@
     ViewData.SetActivePageAndTitle(WalletsNavPages.Rescan);
 }
 
-<h4>@ViewData["Title"]</h4>
 
 @if (!Model.Ok)
 {
@@ -36,14 +35,6 @@
             {
                 <p><span class="fa fa-times-circle" style="color:red;"></span> <span>This full node do not support rescan of the UTXO set</span></p>
             }
-            @if (Model.IsSegwit)
-            {
-                <p><span class="fa fa-check-circle" style="color:green;"></span> <span>This wallet is compatible with segwit</span></p>
-            }
-            else
-            {
-                <p><span class="fa fa-times-circle" style="color:red;"></span> <span>This wallet is not compatible with segwit</span></p>
-            }
         </div>
     </div>
 }
@@ -64,7 +55,7 @@ else if (!Model.Progress.HasValue)
                 <span>The previous scan completed and found <b>@Model.LastSuccess.Found</b> UTXOs in <b>@Model.TimeOfScan</b> (The total UTXO set size is @Model.LastSuccess.TotalSizeOfUTXOSet.Value)</span>
             </div>
         }
-        <div class="col-md-10">
+        <div class="col-md-8">
             <p>
                 Scanning the UTXO set allow you to restore the balance of your wallet, but not all the transaction history.
             </p>
@@ -77,7 +68,7 @@ else if (!Model.Progress.HasValue)
     </div>
 
     <div class="row">
-        <div class="col-md-10">
+        <div class="col-md-8">
             <form method="post">
                 <div class="form-group">
                     <label asp-for="StartingIndex"></label>

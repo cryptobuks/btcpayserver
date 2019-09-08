@@ -1,6 +1,6 @@
 ﻿@model BTCPayServer.Models.PaymentRequestViewModels.ViewPaymentRequestViewModel
 
-@addTagHelper *, Meziantou.AspNetCore.BundleTagHelpers
+@addTagHelper *, BundlerMinifier.TagHelpers
 @inject BTCPayServer.HostedServices.CssThemeManager themeManager
 @{
     ViewData["Title"] = Model.Title;
@@ -22,7 +22,7 @@
     @if (!Context.Request.Query.ContainsKey("simple"))
     {
         <script type="text/javascript">
-            var srvModel = @Html.Raw(Json.Serialize(Model));
+            var srvModel = @Safe.Json(Model);
         </script>
         <bundle name="wwwroot/bundles/payment-request-bundle-1.min.js"></bundle>
         <bundle name="wwwroot/bundles/payment-request-bundle-2.min.js"></bundle>
@@ -31,15 +31,12 @@
     }
 
     <bundle name="wwwroot/bundles/payment-request-bundle.min.css"></bundle>
-    @if (!string.IsNullOrEmpty(Model.EmbeddedCSS))
-    {
-        <style>
-            @Html.Raw(Model.EmbeddedCSS);
-        </style>
-    }
+    
+    @Safe.Raw(Model.EmbeddedCSS)
 </head>
 <body>
 
+<partial name="_StatusMessage" for="StatusMessage" />
 @if (Context.Request.Query.ContainsKey("simple"))
 {
     @await Html.PartialAsync("MinimalPaymentRequest", Model)
@@ -62,6 +59,7 @@ else
                             <template v-else>
                                 <template v-if="ended">Request Expired</template>
                                 <template v-else-if="endDiff">Expires in {{endDiff}}</template>
+                                <template v-else>{{srvModel.status}}</template>
                             </template>
                         </span>
                     </h1>
@@ -178,15 +176,26 @@ else
                                                     </form>
                                                 </template>
 
+                                                <template v-else>
+                                                    <button class="btn btn-primary btn-lg mt-1" v-on:click="pay(null)"
+                                                            :disabled="loading">
+                                                        <div v-if="loading" class="spinner-grow spinner-grow-sm" role="status">
+                                                            <span class="sr-only">Loading...</span>
+                                                        </div>
 
-                                                <button v-else class="btn btn-primary btn-lg " v-on:click="pay(null)"
-                                                        :disabled="loading">
-                                                    <div v-if="loading" class="spinner-grow spinner-grow-sm" role="status">
-                                                        <span class="sr-only">Loading...</span>
-                                                    </div>
+                                                        Pay now
+                                                    </button>
+                                                    <button class="btn btn-secondary btn-lg mt-1" 
+                                                            v-if="!srvModel.pendingInvoiceHasPayments" 
+                                                            v-on:click="cancelPayment()"
+                                                            :disabled="loading">
+                                                        <div v-if="loading" class="spinner-grow spinner-grow-sm" role="status">
+                                                            <span class="sr-only">Loading...</span>
+                                                        </div>
 
-                                                    Pay now
-                                                </button>
+                                                            Cancel current invoice</button>
+                                                </template>
+                                               
                                             </td>
                                         </tr>
                                         </tbody>

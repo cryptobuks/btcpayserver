@@ -1,9 +1,7 @@
 ﻿using BTCPayServer.Configuration;
 using Microsoft.Extensions.Logging;
-using Microsoft.AspNetCore.Hosting;
 using System;
-using System.Collections.Generic;
-using System.Text;
+using System.IdentityModel.Tokens.Jwt;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.AspNetCore.Http;
@@ -12,7 +10,6 @@ using NBitcoin;
 using BTCPayServer.Data;
 using Microsoft.EntityFrameworkCore;
 using System.IO;
-using NBXplorer;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Hosting;
 using BTCPayServer.Services;
@@ -21,24 +18,18 @@ using BTCPayServer.Services.Rates;
 using BTCPayServer.Services.Stores;
 using BTCPayServer.Services.Fees;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Rewrite;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
-using Microsoft.AspNetCore.Authorization;
 using BTCPayServer.Controllers;
 using BTCPayServer.Services.Mails;
-using Microsoft.AspNetCore.Identity;
-using BTCPayServer.Models;
-using System.Threading.Tasks;
 using System.Threading;
 using BTCPayServer.Services.Wallets;
 using BTCPayServer.Authentication;
-using Microsoft.Extensions.Caching.Memory;
 using BTCPayServer.Logging;
 using BTCPayServer.HostedServices;
-using Meziantou.AspNetCore.BundleTagHelpers;
-using System.Security.Claims;
 using BTCPayServer.PaymentRequest;
+using BTCPayServer.Payments;
+using BTCPayServer.Payments.Bitcoin;
 using BTCPayServer.Payments.Changelly;
 using BTCPayServer.Payments.Lightning;
 using BTCPayServer.Security;
@@ -48,22 +39,45 @@ using NBXplorer.DerivationStrategy;
 using NicolasDorier.RateLimits;
 using Npgsql;
 using BTCPayServer.Services.Apps;
+using BTCPayServer.Services.U2F;
+using BundlerMinifier.TagHelpers;
+using OpenIddict.EntityFrameworkCore.Models;
+
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Security.Claims;
+using System.Threading.Tasks;
+using BTCPayServer.Models;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Routing;
 
 namespace BTCPayServer.Hosting
 {
     public static class BTCPayServerServices
     {
-        public static IServiceCollection AddBTCPayServer(this IServiceCollection services)
+        public static IServiceCollection AddBTCPayServer(this IServiceCollection services, IConfiguration configuration)
         {
             services.AddDbContext<ApplicationDbContext>((provider, o) =>
             {
                 var factory = provider.GetRequiredService<ApplicationDbContextFactory>();
                 factory.ConfigureBuilder(o);
+                o.UseOpenIddict<BTCPayOpenIdClient, BTCPayOpenIdAuthorization, OpenIddictScope<string>, BTCPayOpenIdToken, string>();
             });
             services.AddHttpClient();
+            services.AddHttpClient(nameof(ExplorerClientProvider), httpClient =>
+            {
+                httpClient.Timeout = Timeout.InfiniteTimeSpan;
+            });
             services.TryAddSingleton<SettingsRepository>();
+            services.TryAddSingleton<TorServices>();
+            services.TryAddSingleton<SocketFactory>();
+            services.TryAddSingleton<LightningClientFactoryService>();
             services.TryAddSingleton<InvoicePaymentNotification>();
-            services.TryAddSingleton<BTCPayServerOptions>(o => o.GetRequiredService<IOptions<BTCPayServerOptions>>().Value);
+            services.TryAddSingleton<BTCPayServerOptions>(o =>
+                o.GetRequiredService<IOptions<BTCPayServerOptions>>().Value);
+            services.AddStartupTask<MigrationStartupTask>();
             services.TryAddSingleton<InvoiceRepository>(o =>
             {
                 var opts = o.GetRequiredService<BTCPayServerOptions>();
@@ -71,12 +85,14 @@ namespace BTCPayServer.Hosting
                 var dbpath = Path.Combine(opts.DataDir, "InvoiceDB");
                 if (!Directory.Exists(dbpath))
                     Directory.CreateDirectory(dbpath);
-                return new InvoiceRepository(dbContext, dbpath);
+                return new InvoiceRepository(dbContext, dbpath, o.GetRequiredService<BTCPayNetworkProvider>());
             });
             services.AddSingleton<BTCPayServerEnvironment>();
             services.TryAddSingleton<TokenRepository>();
+            services.TryAddSingleton<WalletRepository>();
             services.TryAddSingleton<EventAggregator>();
             services.TryAddSingleton<PaymentRequestService>();
+            services.TryAddSingleton<U2FService>();
             services.TryAddSingleton<CoinAverageSettings>();
             services.TryAddSingleton<ApplicationDbContextFactory>(o => 
             {
@@ -90,12 +106,14 @@ namespace BTCPayServer.Hosting
                 else if(!String.IsNullOrEmpty(opts.MySQLConnectionString))
                 {
                     Logs.Configuration.LogInformation($"MySQL DB used ({opts.MySQLConnectionString})");
+                    Logs.Configuration.LogWarning("MySQL is not widely tested and should be considered experimental, we advise you to use postgres instead.");
                     dbContext = new ApplicationDbContextFactory(DatabaseType.MySQL, opts.MySQLConnectionString);
                 }
                 else
                 {
                     var connStr = "Data Source=" + Path.Combine(opts.DataDir, "sqllite.db");
                     Logs.Configuration.LogInformation($"SQLite DB used ({connStr})");
+                    Logs.Configuration.LogWarning("MySQL is not widely tested and should be considered experimental, we advise you to use postgres instead.");
                     dbContext = new ApplicationDbContextFactory(DatabaseType.Sqlite, connStr);
                 }
                  
@@ -109,6 +127,7 @@ namespace BTCPayServer.Hosting
             });
 
             services.TryAddSingleton<AppService>();
+            services.TryAddTransient<Safe>();
             services.TryAddSingleton<Ganss.XSS.HtmlSanitizer>(o =>
             {
 
@@ -169,17 +188,20 @@ namespace BTCPayServer.Hosting
                 o.ModelMetadataDetailsProviders.Add(new SuppressChildValidationMetadataProvider(typeof(DerivationStrategyBase)));
             });
             services.AddSingleton<IHostedService, CssThemeManagerHostedService>();
-            services.AddSingleton<IHostedService, MigratorHostedService>();
 
-            services.AddSingleton<Payments.IPaymentMethodHandler<DerivationStrategy>, Payments.Bitcoin.BitcoinLikePaymentHandler>();
-            services.AddSingleton<IHostedService, Payments.Bitcoin.NBXplorerListener>();
-
-            services.AddSingleton<IHostedService, HostedServices.CheckConfigurationHostedService>();
-
-            services.AddSingleton<Payments.IPaymentMethodHandler<Payments.Lightning.LightningSupportedPaymentMethod>, Payments.Lightning.LightningLikePaymentHandler>();
-            services.AddSingleton<LightningLikePaymentHandler>();
-            services.AddSingleton<IHostedService, Payments.Lightning.LightningListener>();
+            services.AddSingleton<HostedServices.CheckConfigurationHostedService>();
+            services.AddSingleton<IHostedService, HostedServices.CheckConfigurationHostedService>(o => o.GetRequiredService<CheckConfigurationHostedService>());
             
+            services.AddSingleton<BitcoinLikePaymentHandler>();
+            services.AddSingleton<IPaymentMethodHandler>(provider => provider.GetService<BitcoinLikePaymentHandler>());
+            services.AddSingleton<IHostedService, NBXplorerListener>();
+
+            services.AddSingleton<LightningLikePaymentHandler>();
+            services.AddSingleton<IPaymentMethodHandler>(provider => provider.GetService<LightningLikePaymentHandler>());
+            services.AddSingleton<IHostedService, LightningListener>();
+
+            services.AddSingleton<PaymentMethodHandlerDictionary>();
+
             services.AddSingleton<ChangellyClientProvider>();
 
             services.AddSingleton<IHostedService, NBXplorerWaiters>();
@@ -188,6 +210,9 @@ namespace BTCPayServer.Hosting
             services.AddSingleton<IHostedService, RatesHostedService>();
             services.AddSingleton<IHostedService, BackgroundJobSchedulerHostedService>();
             services.AddSingleton<IHostedService, AppHubStreamer>();
+            services.AddSingleton<IHostedService, AppInventoryUpdaterHostedService>();
+            services.AddSingleton<IHostedService, DynamicDnsHostedService>();
+            services.AddSingleton<IHostedService, TorServicesHostedService>();
             services.AddSingleton<IHostedService, PaymentRequestStreamer>();
             services.AddSingleton<IBackgroundJobClient, BackgroundJobClient>();
             services.AddTransient<IConfigureOptions<MvcOptions>, BTCPayClaimsFilter>();
@@ -213,9 +238,9 @@ namespace BTCPayServer.Hosting
             // bundling
 
             services.AddAuthorization(o => Policies.AddBTCPayPolicies(o));
-            BitpayAuthentication.AddAuthentication(services);
+            services.AddBtcPayServerAuthenticationSchemes(configuration);
 
-            services.AddBundles();
+            services.AddSingleton<IBundleProvider, ResourceBundleProvider>();
             services.AddTransient<BundleOptions>(provider =>
             {
                 var opts = provider.GetRequiredService<BTCPayServerOptions>();
@@ -225,9 +250,9 @@ namespace BTCPayServer.Hosting
                 return bundle;
             });
 
-            services.AddCors(options=> 
+            services.AddCors(options =>
             {
-                options.AddPolicy(CorsPolicies.All, p=>p.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin());
+                options.AddPolicy(CorsPolicies.All, p => p.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin());
             });
 
             var rateLimits = new RateLimitService();
@@ -236,38 +261,69 @@ namespace BTCPayServer.Hosting
             return services;
         }
 
-        public static IApplicationBuilder UsePayServer(this IApplicationBuilder app)
+        private static void AddBtcPayServerAuthenticationSchemes(this IServiceCollection services,
+            IConfiguration configuration)
         {
-            using (var scope = app.ApplicationServices.GetService<IServiceScopeFactory>().CreateScope())
-            {
-                //Wait the DB is ready
-                Retry(() =>
-                {
-                    scope.ServiceProvider.GetRequiredService<ApplicationDbContext>().Database.Migrate();
-                });
-            }
+            JwtSecurityTokenHandler.DefaultInboundClaimTypeMap.Clear();
+            JwtSecurityTokenHandler.DefaultOutboundClaimTypeMap.Clear();
 
-            app.UseMiddleware<BTCPayMiddleware>();
-            return app; 
+            services.AddAuthentication()
+                .AddJwtBearer(options =>
+                {
+                    //Disabled so that Tor works witt JWT auth
+                    options.RequireHttpsMetadata = false;
+                    options.TokenValidationParameters.ValidateAudience = false;
+                    //we do not validate the issuer directly because btcpay can be accessed through multiple urls that we cannot predetermine
+                    options.TokenValidationParameters.ValidateIssuer = false;
+                    options.TokenValidationParameters.IssuerSigningKey =
+                        OpenIddictExtensions.GetSigningKey(configuration);
+                    options.IncludeErrorDetails = true;
+                    options.Events = new JwtBearerEvents()
+                    {
+                        OnTokenValidated = async context =>
+                        {
+                            var routeData = context.HttpContext.GetRouteData();
+                            var identity = ((ClaimsIdentity)context.Principal.Identity);
+                            if (context.Principal.IsInRole(Roles.ServerAdmin))
+                            {
+                                identity.AddClaim(new Claim(Policies.CanModifyServerSettings.Key, "true"));
+                            }
+
+                            if (context.HttpContext.GetStoreData() != null ||
+                                !routeData.Values.TryGetValue("storeId", out var storeId))
+                            {
+                                return;
+                            }
+                            var userManager = context.HttpContext.RequestServices
+                                .GetService<UserManager<ApplicationUser>>();
+                            var storeRepository = context.HttpContext.RequestServices
+                                .GetService<StoreRepository>();
+                            var userid = userManager.GetUserId(context.Principal);
+
+                            if (!string.IsNullOrEmpty(userid))
+                            {
+                                var store = await storeRepository.FindStore((string)storeId, userid);
+                                if (store == null)
+                                {
+                                    context.Fail("Could not authorize you against store access");
+                                }
+                                else
+                                {
+                                    context.HttpContext.SetStoreData(store);
+                                    identity.AddClaims(store.GetClaims());
+                                }
+                            }
+                        }
+                    };
+                })
+                .AddCookie()
+                .AddBitpayAuthentication();
         }
 
-        static void Retry(Action act)
+        public static IApplicationBuilder UsePayServer(this IApplicationBuilder app)
         {
-            CancellationTokenSource cts = new CancellationTokenSource(1000);
-            while (true)
-            {
-                try
-                {
-                    act();
-                    return;
-                }
-                // Starting up
-                catch (PostgresException ex) when (ex.SqlState == "57P03") { Thread.Sleep(1000); }
-                catch when (!cts.IsCancellationRequested)
-                {
-                    Thread.Sleep(100);
-                }
-            }
+            app.UseMiddleware<BTCPayMiddleware>();
+            return app; 
         }
     }
 

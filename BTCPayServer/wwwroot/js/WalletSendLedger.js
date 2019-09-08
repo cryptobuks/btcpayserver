@@ -1,10 +1,9 @@
 ﻿$(function () {
-    var destination = $("#Destination").val();
-    var amount = $("#Amount").val();
-    var fee = $("#FeeSatoshiPerByte").val();
-    var substractFee = $("#SubstractFees").val();
-    var noChange = $("#NoChange").val();
-
+    var psbt = $("#PSBT").val();
+    var hintChange = $("#HintChange").val();
+    var successPath = $("#SuccessPath").val();
+    var websocketPath = $("#WebsocketPath").val();
+    
     var loc = window.location, ws_uri;
     if (loc.protocol === "https:") {
         ws_uri = "wss:";
@@ -12,13 +11,9 @@
         ws_uri = "ws:";
     }
     ws_uri += "//" + loc.host;
-    ws_uri += loc.pathname + "/ws";
-
-    var successCallback = loc.protocol + "//" + loc.host + loc.pathname + "/success";
-
+    ws_uri += websocketPath;
     var ledgerDetected = false;
     var bridge = new ledgerwebsocket.LedgerWebSocketBridge(ws_uri);
-    var cryptoCode = $("#cryptoCode").val();
     function WriteAlert(type, message) {
         $("#walletAlert").removeClass("alert-danger");
         $("#walletAlert").removeClass("alert-warning");
@@ -44,19 +39,10 @@
             return false;
         $(".crypto-info").css("display", "block");
         var args = "";
-        args += "cryptoCode=" + cryptoCode;
-        args += "&destination=" + destination;
-        args += "&amount=" + amount;
-        args += "&feeRate=" + fee;
-        args += "&substractFees=" + substractFee;
-        args += "&noChange=" + noChange;
-
-        if (noChange === "True") {
-            WriteAlert("warning", 'WARNING: Because you want to make sure no change UTXO is created, you will end up sending more than the chosen amount to your destination. Please validate the transaction on your ledger');
-        }
-        else {
-            WriteAlert("warning", 'Please validate the transaction on your ledger');
-        }        
+        args += "&psbt=" + encodeURIComponent(psbt);
+        args += "&hintChange=" + encodeURIComponent(hintChange);
+        
+        WriteAlert("warning", 'Please validate the transaction on your ledger');      
 
         var confirmButton = $("#confirm-button");
         confirmButton.prop("disabled", true);
@@ -76,8 +62,7 @@
                 if (result.error) {
                     WriteAlert("danger", result.error);
                 } else {
-                    WriteAlert("success", 'Transaction broadcasted (' + result.transactionId + ')');
-                    window.location.replace(successCallback + "?txid=" + result.transactionId);
+                    window.location.replace(loc.protocol + "//" + loc.host + successPath + "?psbt=" + encodeURIComponent(result.psbt));
                 }
             });
     };

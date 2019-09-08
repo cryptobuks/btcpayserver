@@ -3,11 +3,13 @@ using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using BTCPayServer.Services.Apps;
+using BTCPayServer.Validation;
 
 namespace BTCPayServer.Models.AppViewModels
 {
     public class UpdateCrowdfundViewModel
     {
+        public string StoreId { get; set; }
         [Required] [MaxLength(30)] public string Title { get; set; }
 
         [MaxLength(50)] public string Tagline { get; set; }
@@ -16,8 +18,13 @@ namespace BTCPayServer.Models.AppViewModels
         
         [Display(Name = "Featured Image")]
         public string MainImageUrl { get; set; }
-
+        
+        [Display(Name = "Callback Notification Url")] 
+        [Uri]
         public string NotificationUrl { get; set; }
+        [Display(Name = "Invoice Email Notification")]
+        [EmailAddress]
+        public string NotificationEmail { get; set; }
 
         [Required]
         [Display(Name = "Allow crowdfund to be publicly visible (still visible to you)")]
@@ -86,5 +93,7 @@ namespace BTCPayServer.Models.AppViewModels
         public string Sounds{ get; set; }
         [Display(Name = "Colors to rotate between with animation when a payment is made. First color is the default background. One color per line. Can be any valid css color value.")]
         public string AnimationColors{ get; set; }
+
+        public bool NotificationEmailWarning { get; set; }
     }
 }

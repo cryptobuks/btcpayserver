@@ -152,10 +152,10 @@ namespace BTCPayServer.Controllers
                     ModelState.AddModelError(nameof(vm.ConnectionString), "Missing url parameter");
                     return View(vm);
                 case "test":
-                    var handler = (LightningLikePaymentHandler)_ServiceProvider.GetRequiredService<IPaymentMethodHandler<Payments.Lightning.LightningSupportedPaymentMethod>>();
+                    var handler = _ServiceProvider.GetRequiredService<LightningLikePaymentHandler>();
                     try
                     {
-                        var info = await handler.GetNodeInfo(paymentMethod, network);
+                        var info = await handler.GetNodeInfo(this.Request.IsOnion(), paymentMethod, network);
                         if (!vm.SkipPortTest)
                         {
                             using (CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
@@ -178,7 +178,7 @@ namespace BTCPayServer.Controllers
 
         private bool CanUseInternalLightning()
         {
-            return (_BTCPayEnv.IsDevelopping || User.IsInRole(Roles.ServerAdmin));
+            return (_BTCPayEnv.IsDevelopping || User.IsInRole(Roles.ServerAdmin) || _CssThemeManager.AllowLightningInternalNodeForAll);
         }
     }
 }

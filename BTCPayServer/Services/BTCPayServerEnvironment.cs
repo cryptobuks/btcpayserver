@@ -14,7 +14,8 @@ namespace BTCPayServer.Services
     public class BTCPayServerEnvironment
     {
         IHttpContextAccessor httpContext;
-        public BTCPayServerEnvironment(IHostingEnvironment env, BTCPayNetworkProvider provider, IHttpContextAccessor httpContext)
+        TorServices torServices;
+        public BTCPayServerEnvironment(IHostingEnvironment env, BTCPayNetworkProvider provider, IHttpContextAccessor httpContext, TorServices torServices)
         {
             this.httpContext = httpContext;
             Version = typeof(BTCPayServerEnvironment).GetTypeInfo().Assembly.GetCustomAttribute<AssemblyFileVersionAttribute>().Version;
@@ -25,6 +26,7 @@ namespace BTCPayServer.Services
 #endif
             Environment = env;
             NetworkType = provider.NetworkType;
+            this.torServices = torServices;
         }
         public IHostingEnvironment Environment
         {
@@ -34,6 +36,8 @@ namespace BTCPayServer.Services
         public string ExpectedDomain => httpContext.HttpContext.Request.Host.Host;
         public string ExpectedHost => httpContext.HttpContext.Request.Host.Value;
         public string ExpectedProtocol => httpContext.HttpContext.Request.Scheme;
+        public string OnionUrl => this.torServices.Services.Where(s => s.ServiceType == TorServiceType.BTCPayServer)
+                                                           .Select(s => $"http://{s.OnionHost}").FirstOrDefault();
 
         public NetworkType NetworkType { get; set; }
         public string Version
@@ -52,6 +56,20 @@ namespace BTCPayServer.Services
                 return NetworkType == NetworkType.Regtest && Environment.IsDevelopment();
             }
         }
+
+        public bool IsSecure
+        {
+            get
+            {
+                return NetworkType != NetworkType.Mainnet ||
+                       httpContext.HttpContext.Request.Scheme == "https" ||
+                       httpContext.HttpContext.Request.Host.Host.EndsWith(".onion", StringComparison.OrdinalIgnoreCase) ||
+                       Extensions.IsLocalNetwork(httpContext.HttpContext.Request.Host.Host);
+            }
+        }
+
+        public HttpContext Context => httpContext.HttpContext;    
+
         public override string ToString()
         {
             StringBuilder txt = new StringBuilder();

@@ -6,13 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
-using System.Text;
-using StandardConfiguration;
 using Microsoft.Extensions.Configuration;
-using NBXplorer;
-using BTCPayServer.Payments.Lightning;
-using Renci.SshNet;
-using NBitcoin.DataEncoders;
 using BTCPayServer.SSH;
 using BTCPayServer.Lightning;
 using Serilog.Events;
@@ -48,12 +42,8 @@ namespace BTCPayServer.Configuration
             get;
             private set;
         }
-        public List<IPEndPoint> Listen
-        {
-            get;
-            set;
-        }
-
+        public EndPoint SocksEndpoint { get; set; }
+        
         public List<NBXplorerConnectionSetting> NBXplorerConnectionSettings
         {
             get;
@@ -79,9 +69,11 @@ namespace BTCPayServer.Configuration
         public void LoadArgs(IConfiguration conf)
         {
             NetworkType = DefaultConfiguration.GetNetworkType(conf);
-            var defaultSettings = BTCPayDefaultSettings.GetDefaultSettings(NetworkType);
-            DataDir = conf.GetOrDefault<string>("datadir", defaultSettings.DefaultDataDirectory);
+            DataDir = conf.GetDataDir(NetworkType);
             Logs.Configuration.LogInformation("Network: " + NetworkType.ToString());
+
+            if (conf.GetOrDefault<bool>("launchsettings", false) && NetworkType != NetworkType.Regtest)
+                throw new ConfigException($"You need to run BTCPayServer with the run.sh or run.ps1 script");
 
             var supportedChains = conf.GetOrDefault<string>("chains", "btc")
                                       .Split(',', StringSplitOptions.RemoveEmptyEntries)
@@ -89,12 +81,12 @@ namespace BTCPayServer.Configuration
             NetworkProvider = new BTCPayNetworkProvider(NetworkType).Filter(supportedChains.ToArray());
             foreach (var chain in supportedChains)
             {
-                if (NetworkProvider.GetNetwork(chain) == null)
+                if (NetworkProvider.GetNetwork<BTCPayNetworkBase>(chain) == null)
                     throw new ConfigException($"Invalid chains \"{chain}\"");
             }
 
             var validChains = new List<string>();
-            foreach (var net in NetworkProvider.GetAll())
+            foreach (var net in NetworkProvider.GetAll().OfType<BTCPayNetwork>())
             {
                 NBXplorerConnectionSetting setting = new NBXplorerConnectionSetting();
                 setting.CryptoCode = net.CryptoCode;
@@ -113,6 +105,8 @@ namespace BTCPayServer.Configuration
                                 $"If you have a lightning charge server: 'type=charge;server=https://charge.example.com;api-token=yourapitoken'" + Environment.NewLine +
                                 $"If you have a lnd server: 'type=lnd-rest;server=https://lnd:lnd@lnd.example.com;macaroon=abf239...;certthumbprint=2abdf302...'" + Environment.NewLine +
                                 $"              lnd server: 'type=lnd-rest;server=https://lnd:lnd@lnd.example.com;macaroonfilepath=/root/.lnd/admin.macaroon;certthumbprint=2abdf302...'" + Environment.NewLine +
+                                $"If you have an eclair server: 'type=eclair;server=http://eclair.com:4570;password=eclairpassword;bitcoin-host=bitcoind:37393;bitcoin-auth=bitcoinrpcuser:bitcoinrpcpassword" + Environment.NewLine +
+                                $"               eclair server: 'type=eclair;server=http://eclair.com:4570;password=eclairpassword;bitcoin-host=bitcoind:37393" + Environment.NewLine +
                                 $"Error: {error}" + Environment.NewLine +
                                 "This service will not be exposed through BTCPay Server");
                         }
@@ -149,6 +143,17 @@ namespace BTCPayServer.Configuration
             PostgresConnectionString = conf.GetOrDefault<string>("postgres", null);
             MySQLConnectionString = conf.GetOrDefault<string>("mysql", null);
             BundleJsCss = conf.GetOrDefault<bool>("bundlejscss", true);
+            AllowAdminRegistration = conf.GetOrDefault<bool>("allow-admin-registration", false);
+            TorrcFile = conf.GetOrDefault<string>("torrcfile", null);
+
+            var socksEndpointString = conf.GetOrDefault<string>("socksendpoint", null);
+            if(!string.IsNullOrEmpty(socksEndpointString))
+            {
+                if (!Utils.TryParseEndpoint(socksEndpointString, 9050, out var endpoint))
+                    throw new ConfigException("Invalid value for socksendpoint");
+                SocksEndpoint = endpoint;
+            }
+            
 
             var sshSettings = ParseSSHConfiguration(conf);
             if ((!string.IsNullOrEmpty(sshSettings.Password) || !string.IsNullOrEmpty(sshSettings.KeyFile)) && !string.IsNullOrEmpty(sshSettings.Server))
@@ -170,12 +175,16 @@ namespace BTCPayServer.Configuration
                 try
                 {
                     sshSettings.CreateConnectionInfo();
+                    SSHSettings = sshSettings;
+                }
+                catch (NotSupportedException ex)
+                {
+                    Logs.Configuration.LogWarning($"The SSH key is not supported ({ex.Message}), try to generate the key with ssh-keygen using \"-m PEM\". Skipping SSH configuration...");
                 }
                 catch
                 {
                     throw new ConfigException($"sshkeyfilepassword is invalid");
                 }
-                SSHSettings = sshSettings;
             }
 
             var fingerPrints = conf.GetOrDefault<string>("sshtrustedfingerprints", "");
@@ -185,7 +194,7 @@ namespace BTCPayServer.Configuration
                 {
                     if (!SSHFingerprint.TryParse(fingerprint, out var f))
                         throw new ConfigException($"Invalid ssh fingerprint format {fingerprint}");
-                    TrustedFingerprints.Add(f);
+                    SSHSettings?.TrustedFingerprints.Add(f);
                 }
             }
 
@@ -240,11 +249,6 @@ namespace BTCPayServer.Configuration
             return settings;
         }
 
-        internal bool IsTrustedFingerprint(byte[] fingerPrint, byte[] hostKey)
-        {
-            return TrustedFingerprints.Any(f => f.Match(fingerPrint, hostKey));
-        }
-
         public string RootPath { get; set; }
         public Dictionary<string, LightningConnectionString> InternalLightningByCryptoCode { get; set; } = new Dictionary<string, LightningConnectionString>();
 
@@ -267,11 +271,12 @@ namespace BTCPayServer.Configuration
             get;
             set;
         }
-        public List<SSHFingerprint> TrustedFingerprints { get; set; } = new List<SSHFingerprint>();
+        public bool AllowAdminRegistration { get; set; }
         public SSHSettings SSHSettings
         {
             get;
             set;
         }
+        public string TorrcFile { get; set; }
     }
 }

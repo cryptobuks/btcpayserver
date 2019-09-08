@@ -5,7 +5,7 @@
 @inject BTCPayServer.HostedServices.NBXplorerDashboard dashboard
 @inject BTCPayServer.HostedServices.CssThemeManager themeManager
 
-@addTagHelper *, Meziantou.AspNetCore.BundleTagHelpers
+@addTagHelper *, BundlerMinifier.TagHelpers
 
 <!DOCTYPE html>
 <html lang="en">
@@ -55,6 +55,14 @@
                     <span class="badge badge-warning" style="font-size:10px;">@env.NetworkType.ToString()</span>
                 }
             </a>
+            @if (env.OnionUrl != null)
+            {
+                <span>
+                    <a href="@env.OnionUrl" target="_blank">
+                        <img src="~/img/icons/onion.svg" width="26" height="32" />
+                    </a>
+                </span>
+            }
             <button class="navbar-toggler navbar-toggler-right" type="button" data-toggle="collapse" data-target="#navbarResponsive" aria-controls="navbarResponsive" aria-expanded="false" aria-label="Toggle navigation">
                 <span class="navbar-toggler-icon"></span>
             </button>
@@ -64,26 +72,27 @@
                     {
                         if (User.IsInRole(Roles.ServerAdmin))
                         {
-                            <li class="nav-item"><a asp-area="" asp-controller="Server" asp-action="ListUsers" class="nav-link js-scroll-trigger">Server settings</a></li>
+                            <li class="nav-item"><a asp-area="" asp-controller="Server" asp-action="ListUsers" class="nav-link js-scroll-trigger" id="ServerSettings">Server settings</a></li>
                         }
-                        <li class="nav-item"><a asp-area="" asp-controller="UserStores" asp-action="ListStores" class="nav-link js-scroll-trigger">Stores</a></li>
-                        <li class="nav-item"><a asp-area="" asp-controller="Apps" asp-action="ListApps" class="nav-link js-scroll-trigger">Apps</a></li>
-                        <li class="nav-item"><a asp-area="" asp-controller="Wallets" asp-action="ListWallets" class="nav-link js-scroll-trigger">Wallets</a></li>
-                        <li class="nav-item"><a asp-area="" asp-controller="Invoice" asp-action="ListInvoices" class="nav-link js-scroll-trigger">Invoices</a></li>
-                        <li class="nav-item"><a asp-area="" asp-controller="PaymentRequest" asp-action="GetPaymentRequests" class="nav-link js-scroll-trigger">Payment Requests</a></li>
+                        <li class="nav-item"><a asp-area="" asp-controller="UserStores" asp-action="ListStores" class="nav-link js-scroll-trigger" id="Stores">Stores</a></li>
+                        <li class="nav-item"><a asp-area="" asp-controller="Apps" asp-action="ListApps" class="nav-link js-scroll-trigger" id="Apps">Apps</a></li>
+                        <li class="nav-item"><a asp-area="" asp-controller="Wallets" asp-action="ListWallets" class="nav-link js-scroll-trigger" id="Wallets">Wallets</a></li>
+                        <li class="nav-item"><a asp-area="" asp-controller="Invoice" asp-action="ListInvoices" class="nav-link js-scroll-trigger" id="Invoices">Invoices</a></li>
+                        <li class="nav-item"><a asp-area="" asp-controller="PaymentRequest" asp-action="GetPaymentRequests" class="nav-link js-scroll-trigger" id="PaymentRequests">Payment Requests</a></li>
                         <li class="nav-item">
-                            <a asp-area="" asp-controller="Manage" asp-action="Index" title="Manage" class="nav-link js-scroll-trigger">My settings</a>
+                            <a asp-area="" asp-controller="Manage" asp-action="Index" title="My settings" class="nav-link js-scroll-trigger" id="MySettings"><i class="fa fa-user"></i></a>
                         </li>
                         <li class="nav-item">
-                            <a asp-area="" asp-controller="Account" asp- asp-action="Logout" title="Manage" class="nav-link js-scroll-trigger">Log out</a>
+                            <a asp-area="" asp-controller="Account" asp- asp-action="Logout" title="Logout" class="nav-link js-scroll-trigger" id="Logout"><i class="fa fa-sign-out"></i></a>
                         </li>}
-                    else
+                    else if (env.IsSecure)
                     {
                         if (themeManager.ShowRegister)
                         {
-                            <li class="nav-item"><a asp-area="" asp-controller="Account" asp-action="Register" class="nav-link js-scroll-trigger">Register</a></li>
+                            <li class="nav-item"><a asp-area="" asp-controller="Account" asp-action="Register" class="nav-link js-scroll-trigger" id="Register">Register</a></li>
                         }
-                        <li class="nav-item"><a asp-area="" asp-controller="Account" asp-action="Login" class="nav-link js-scroll-trigger">Log in</a></li>}
+                        <li class="nav-item"><a asp-area="" asp-controller="Account" asp-action="Login" class="nav-link js-scroll-trigger" id="Login">Log in</a></li>
+                    }
 
                 </ul>
             </div>
@@ -91,6 +100,14 @@
                 <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
                 <span>BTCPay is expecting you to access this website from <b>@(env.ExpectedProtocol)://@(env.ExpectedHost)/</b>. If you use a reverse proxy, please set the <b>X-Forwarded-Proto</b> header to <b id="browserScheme">@(env.ExpectedProtocol)</b> (<a href="https://docs.btcpayserver.org/faq-and-common-issues/faq-deployment#btcpay-is-expecting-you-to-access-this-website-from" target="_blank">More information</a>)</span>
             </div>
+            @if (!env.IsSecure)
+            {
+                <div class="alert alert-danger alert-dismissible" style="position:absolute; top:75px;" role="alert">
+                    <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+                    <span>Your access to BTCPay Server is over an unsecured network. If you are using the docker deployment method with NGINX and HTTPS is not available, you probably did not configure your DNS settings correctly. <br /> 
+                          We disabled the register and login link so you don't leak your credentials.</span>
+                </div>
+            }
         </div>
     </nav>
 
@@ -111,14 +128,14 @@
 
     @RenderSection("Scripts", required: false)
 
-    <script type="text/javascript">
-        var expectedDomain = @Html.Raw(Json.Serialize(env.ExpectedHost));
-        var expectedProtocol = @Html.Raw(Json.Serialize(env.ExpectedProtocol));
+        <script type="text/javascript">
+        var expectedDomain = @Safe.Json(env.ExpectedHost);
+        var expectedProtocol = @Safe.Json(env.ExpectedProtocol);
         if (window.location.host != expectedDomain || window.location.protocol != expectedProtocol + ":") {
             document.getElementById("badUrl").style.display = "block";
             document.getElementById("browserScheme").innerText = window.location.protocol.substr(0, window.location.protocol.length -1);
         }
-    </script>
+        </script>
 </body>
 
 </html>

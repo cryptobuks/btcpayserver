@@ -17,6 +17,7 @@ using NBitcoin.DataEncoders;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -27,37 +28,59 @@ using Renci.SshNet;
 using BTCPayServer.Logging;
 using BTCPayServer.Lightning;
 using System.Runtime.CompilerServices;
+using BTCPayServer.Storage.Models;
+using BTCPayServer.Storage.Services;
+using BTCPayServer.Storage.Services.Providers;
+using BTCPayServer.Services.Apps;
+using Microsoft.AspNetCore.Mvc.Rendering;
+using BTCPayServer.Data;
+using Microsoft.EntityFrameworkCore;
 
 namespace BTCPayServer.Controllers
 {
     [Authorize(Policy = BTCPayServer.Security.Policies.CanModifyServerSettings.Key)]
-    public class ServerController : Controller
+    public partial class ServerController : Controller
     {
         private UserManager<ApplicationUser> _UserManager;
         SettingsRepository _SettingsRepository;
         private readonly NBXplorerDashboard _dashBoard;
-        private RateFetcher _RateProviderFactory;
         private StoreRepository _StoreRepository;
         LightningConfigurationProvider _LnConfigProvider;
-        BTCPayServerOptions _Options;
+        private readonly TorServices _torServices;
+        private BTCPayServerOptions _Options;
+        private readonly AppService _AppService;
+        private readonly CheckConfigurationHostedService _sshState;
+        private readonly StoredFileRepository _StoredFileRepository;
+        private readonly FileService _FileService;
+        private readonly IEnumerable<IStorageProviderService> _StorageProviderServices;
 
         public ServerController(UserManager<ApplicationUser> userManager,
-            Configuration.BTCPayServerOptions options,
-            RateFetcher rateProviderFactory,
+            StoredFileRepository storedFileRepository,
+            FileService fileService,
+            IEnumerable<IStorageProviderService> storageProviderServices,
+            BTCPayServerOptions options,
             SettingsRepository settingsRepository,
             NBXplorerDashboard dashBoard,
             IHttpClientFactory httpClientFactory,
             LightningConfigurationProvider lnConfigProvider,
-            Services.Stores.StoreRepository storeRepository)
+            TorServices torServices,
+            StoreRepository storeRepository,
+            AppService appService,
+            CheckConfigurationHostedService sshState)
         {
             _Options = options;
+            _StoredFileRepository = storedFileRepository;
+            _FileService = fileService;
+            _StorageProviderServices = storageProviderServices;
             _UserManager = userManager;
             _SettingsRepository = settingsRepository;
             _dashBoard = dashBoard;
             HttpClientFactory = httpClientFactory;
-            _RateProviderFactory = rateProviderFactory;
             _StoreRepository = storeRepository;
             _LnConfigProvider = lnConfigProvider;
+            _torServices = torServices;
+            _AppService = appService;
+            _sshState = sshState;
         }
 
         [Route("server/rates")]
@@ -131,17 +154,20 @@ namespace BTCPayServer.Controllers
         }
 
         [Route("server/users")]
-        public IActionResult ListUsers()
+        public IActionResult ListUsers(int skip = 0, int count = 50)
         {
             var users = new UsersViewModel();
             users.StatusMessage = StatusMessage;
-            users.Users
-                = _UserManager.Users.Select(u => new UsersViewModel.UserViewModel()
+            users.Users = _UserManager.Users.Skip(skip).Take(count)
+                .Select(u => new UsersViewModel.UserViewModel
                 {
                     Name = u.UserName,
                     Email = u.Email,
                     Id = u.Id
                 }).ToList();
+            users.Skip = skip;
+            users.Count = count;
+            users.Total = _UserManager.Users.Count();
             return View(users);
         }
 
@@ -163,9 +189,8 @@ namespace BTCPayServer.Controllers
         public IActionResult Maintenance()
         {
             MaintenanceViewModel vm = new MaintenanceViewModel();
-            vm.UserName = "btcpayserver";
+            vm.CanUseSSH = _sshState.CanUseSSH;
             vm.DNSDomain = this.Request.Host.Host;
-            vm.SetConfiguredSSH(_Options.SSHSettings);
             if (IPAddress.TryParse(vm.DNSDomain, out var unused))
                 vm.DNSDomain = null;
             return View(vm);
@@ -175,9 +200,9 @@ namespace BTCPayServer.Controllers
         [HttpPost]
         public async Task<IActionResult> Maintenance(MaintenanceViewModel vm, string command)
         {
+            vm.CanUseSSH = _sshState.CanUseSSH;
             if (!ModelState.IsValid)
                 return View(vm);
-            vm.SetConfiguredSSH(_Options.SSHSettings);
             if (command == "changedomain")
             {
                 if (string.IsNullOrWhiteSpace(vm.DNSDomain))
@@ -231,7 +256,7 @@ namespace BTCPayServer.Controllers
                     }
                 }
 
-                var error = RunSSH(vm, $"changedomain.sh {vm.DNSDomain}");
+                var error = await RunSSH(vm, $"changedomain.sh {vm.DNSDomain}");
                 if (error != null)
                     return error;
 
@@ -241,10 +266,17 @@ namespace BTCPayServer.Controllers
             }
             else if (command == "update")
             {
-                var error = RunSSH(vm, $"btcpay-update.sh");
+                var error = await RunSSH(vm, $"btcpay-update.sh");
                 if (error != null)
                     return error;
                 StatusMessage = $"The server might restart soon if an update is available...";
+            }
+            else if (command == "clean")
+            {
+                var error = await RunSSH(vm, $"btcpay-clean.sh");
+                if (error != null)
+                    return error;
+                StatusMessage = $"The old docker images will be cleaned soon...";
             }
             else
             {
@@ -271,43 +303,13 @@ namespace BTCPayServer.Controllers
             return BadRequest();
         }
 
-        private IActionResult RunSSH(MaintenanceViewModel vm, string ssh)
+        private async Task<IActionResult> RunSSH(MaintenanceViewModel vm, string command)
         {
-            ssh = $"sudo bash -c '. /etc/profile.d/btcpay-env.sh && nohup {ssh} > /dev/null 2>&1 & disown'";
-            var sshClient = _Options.SSHSettings == null ? vm.CreateSSHClient(this.Request.Host.Host)
-                                                         : new SshClient(_Options.SSHSettings.CreateConnectionInfo());
-
-            if (_Options.TrustedFingerprints.Count != 0)
-            {
-                sshClient.HostKeyReceived += (object sender, Renci.SshNet.Common.HostKeyEventArgs e) =>
-                {
-                    if (_Options.TrustedFingerprints.Count == 0)
-                    {
-                        Logs.Configuration.LogWarning($"SSH host fingerprint for {e.HostKeyName} is untrusted, start BTCPay with -sshtrustedfingerprints \"{Encoders.Hex.EncodeData(e.FingerPrint)}\"");
-                        e.CanTrust = true; // Not a typo, we want the connection to succeed with a warning
-                    }
-                    else
-                    {
-                        e.CanTrust = _Options.IsTrustedFingerprint(e.FingerPrint, e.HostKey);
-                        if (!e.CanTrust)
-                            Logs.Configuration.LogError($"SSH host fingerprint for {e.HostKeyName} is untrusted, start BTCPay with -sshtrustedfingerprints \"{Encoders.Hex.EncodeData(e.FingerPrint)}\"");
-                    }
-                };
-            }
-            else
-            {
-
-            }
+            SshClient sshClient = null;
 
             try
             {
-                sshClient.Connect();
-            }
-            catch (Renci.SshNet.Common.SshAuthenticationException)
-            {
-                ModelState.AddModelError(nameof(vm.Password), "Invalid credentials");
-                sshClient.Dispose();
-                return View(vm);
+                sshClient = await _Options.SSHSettings.ConnectAsync();
             }
             catch (Exception ex)
             {
@@ -316,28 +318,29 @@ namespace BTCPayServer.Controllers
                 {
                     message = aggrEx.InnerException.Message;
                 }
-                ModelState.AddModelError(nameof(vm.UserName), $"Connection problem ({message})");
-                sshClient.Dispose();
+                ModelState.AddModelError(string.Empty, $"Connection problem ({message})");
                 return View(vm);
             }
-
-            var sshCommand = sshClient.CreateCommand(ssh);
-            sshCommand.CommandTimeout = TimeSpan.FromMinutes(1.0);
-            sshCommand.BeginExecute(ar =>
-            {
-                try
-                {
-                    Logs.PayServer.LogInformation("Running SSH command: " + ssh);
-                    var result = sshCommand.EndExecute(ar);
-                    Logs.PayServer.LogInformation("SSH command executed: " + result);
-                }
-                catch (Exception ex)
-                {
-                    Logs.PayServer.LogWarning("Error while executing SSH command: " + ex.Message);
-                }
-                sshClient.Dispose();
-            });
+            _ = RunSSHCore(sshClient, $". /etc/profile.d/btcpay-env.sh && nohup {command} > /dev/null 2>&1 & disown");
             return null;
+        }
+
+        private static async Task RunSSHCore(SshClient sshClient, string ssh)
+        {
+            try
+            {
+                Logs.PayServer.LogInformation("Running SSH command: " + ssh);
+                var result = await sshClient.RunBash(ssh, TimeSpan.FromMinutes(1.0));
+                Logs.PayServer.LogInformation($"SSH command executed with exit status {result.ExitStatus}. Output: {result.Output}");
+            }
+            catch (Exception ex)
+            {
+                Logs.PayServer.LogWarning("Error while executing SSH command: " + ex.Message);
+            }
+            finally
+            {
+                sshClient.Dispose();
+            }
         }
 
         private static bool IsAdmin(IList<string> roles)
@@ -431,22 +434,68 @@ namespace BTCPayServer.Controllers
         public async Task<IActionResult> Policies()
         {
             var data = (await _SettingsRepository.GetSettingAsync<PoliciesSettings>()) ?? new PoliciesSettings();
+            ViewBag.AppsList = await GetAppSelectList();
             return View(data);
         }
+
         [Route("server/policies")]
         [HttpPost]
-        public async Task<IActionResult> Policies(PoliciesSettings settings)
+        public async Task<IActionResult> Policies(PoliciesSettings settings, string command = "")
         {
+            ViewBag.AppsList = await GetAppSelectList();
+            if (command == "add-domain")
+            {
+                ModelState.Clear();
+                settings.DomainToAppMapping.Add(new PoliciesSettings.DomainToAppMappingItem());
+                return View(settings);
+            }
+            if (command.StartsWith("remove-domain", StringComparison.InvariantCultureIgnoreCase))
+            {
+                ModelState.Clear();
+                var index = int.Parse(command.Substring(command.IndexOf(":", StringComparison.InvariantCultureIgnoreCase) + 1), CultureInfo.InvariantCulture);
+                settings.DomainToAppMapping.RemoveAt(index);
+                return View(settings);
+            }
+
+            if (!ModelState.IsValid)
+            {
+                return View(settings);
+            }
+            var appIdsToFetch = settings.DomainToAppMapping.Select(item => item.AppId).ToList();
+            if (!string.IsNullOrEmpty(settings.RootAppId))
+            {
+                appIdsToFetch.Add(settings.RootAppId);
+            }
+            else
+            {
+                settings.RootAppType = null;
+            }
+
+            if (appIdsToFetch.Any())
+            {
+                var apps = (await _AppService.GetApps(appIdsToFetch.ToArray()))
+                    .ToDictionary(data => data.Id, data => Enum.Parse<AppType>(data.AppType));;
+                if (!string.IsNullOrEmpty(settings.RootAppId))
+                {
+                    settings.RootAppType = apps[settings.RootAppId];
+                }
+
+                foreach (var domainToAppMappingItem in settings.DomainToAppMapping)
+                {
+                    domainToAppMappingItem.AppType = apps[domainToAppMappingItem.AppId];
+                }
+            }
+
             await _SettingsRepository.UpdateSetting(settings);
             TempData["StatusMessage"] = "Policies updated successfully";
-            return View(settings);
+            return RedirectToAction(nameof(Policies));
         }
 
         [Route("server/services")]
-        public IActionResult Services()
+        public async Task<IActionResult> Services()
         {
             var result = new ServicesViewModel();
-            result.ExternalServices = _Options.ExternalServices;
+            result.ExternalServices = _Options.ExternalServices.ToList();
             foreach (var externalService in _Options.OtherExternalServices)
             {
                 result.OtherExternalServices.Add(new ServicesViewModel.OtherExternalService()
@@ -455,7 +504,7 @@ namespace BTCPayServer.Controllers
                     Link = this.Request.GetAbsoluteUriNoPathBase(externalService.Value).AbsoluteUri
                 });
             }
-            if (_Options.SSHSettings != null)
+            if (_sshState.CanUseSSH)
             {
                 result.OtherExternalServices.Add(new ServicesViewModel.OtherExternalService()
                 {
@@ -463,7 +512,76 @@ namespace BTCPayServer.Controllers
                     Link = this.Url.Action(nameof(SSHService))
                 });
             }
+            result.OtherExternalServices.Add(new ServicesViewModel.OtherExternalService()
+            {
+                Name = "Dynamic DNS",
+                Link = this.Url.Action(nameof(DynamicDnsServices))
+            });
+            foreach (var torService in _torServices.Services)
+            {
+                if (torService.VirtualPort == 80)
+                {
+                    result.TorHttpServices.Add(new ServicesViewModel.OtherExternalService()
+                    {
+                        Name = torService.Name,
+                        Link = $"http://{torService.OnionHost}"
+                    });
+                }
+                else if (TryParseAsExternalService(torService, out var externalService))
+                {
+                    result.ExternalServices.Add(externalService);
+                }
+                else
+                {
+                    result.TorOtherServices.Add(new ServicesViewModel.OtherExternalService()
+                    {
+                        Name = torService.Name,
+                        Link = $"{torService.OnionHost}:{torService.VirtualPort}"
+                    });
+                }
+            }
+
+            var storageSettings = await _SettingsRepository.GetSettingAsync<StorageSettings>();
+            result.ExternalStorageServices.Add(new ServicesViewModel.OtherExternalService()
+            {
+                Name = storageSettings == null ? "Not set" : storageSettings.Provider.ToString(),
+                Link = Url.Action("Storage")
+            });
             return View(result);
+        }
+
+        private async Task<List<SelectListItem>> GetAppSelectList()
+        {
+            var apps = (await _AppService.GetAllApps(null, true))
+                .Select(a => new SelectListItem($"{a.AppType} - {a.AppName} - {a.StoreName}", a.Id)).ToList();
+            apps.Insert(0, new SelectListItem("(None)", null));
+            return apps;
+        }
+
+        private static bool TryParseAsExternalService(TorService torService, out ExternalService externalService)
+        {
+            externalService = null;
+            if (torService.ServiceType == TorServiceType.P2P)
+            {
+                externalService = new ExternalService()
+                {
+                    CryptoCode = torService.Network.CryptoCode,
+                    DisplayName = "Full node P2P",
+                    Type = ExternalServiceTypes.P2P,
+                    ConnectionString = new ExternalConnectionString(new Uri($"bitcoin-p2p://{torService.OnionHost}:{torService.VirtualPort}", UriKind.Absolute)),
+                    ServiceName = torService.Name,
+                };
+            }
+            return externalService != null;
+        }
+
+        private ExternalService GetService(string serviceName, string cryptoCode)
+        {
+            var result = _Options.ExternalServices.GetService(serviceName, cryptoCode);
+            if (result != null)
+                return result;
+            _torServices.Services.FirstOrDefault(s => TryParseAsExternalService(s, out result));
+            return result;
         }
 
         [Route("server/services/{serviceName}/{cryptoCode}")]
@@ -474,13 +592,22 @@ namespace BTCPayServer.Controllers
                 StatusMessage = $"Error: {cryptoCode} is not fully synched";
                 return RedirectToAction(nameof(Services));
             }
-            var service = _Options.ExternalServices.GetService(serviceName, cryptoCode);
+            var service = GetService(serviceName, cryptoCode);
             if (service == null)
                 return NotFound();
 
             try
             {
-                var connectionString = await service.ConnectionString.Expand(this.Request.GetAbsoluteUriNoPathBase(), service.Type);
+                if (service.Type == ExternalServiceTypes.P2P)
+                {
+                    return View("P2PService", new LightningWalletServices()
+                    {
+                        ShowQR = showQR,
+                        WalletName = service.ServiceName,
+                        ServiceLink = service.ConnectionString.Server.AbsoluteUri.WithoutEndingSlash()
+                    });
+                }
+                var connectionString = await service.ConnectionString.Expand(this.Request.GetAbsoluteUriNoPathBase(), service.Type, _Options.NetworkType);
                 switch (service.Type)
                 {
                     case ExternalServiceTypes.Charge:
@@ -589,14 +716,14 @@ namespace BTCPayServer.Controllers
                 StatusMessage = $"Error: {cryptoCode} is not fully synched";
                 return RedirectToAction(nameof(Services));
             }
-            var service = _Options.ExternalServices.GetService(serviceName, cryptoCode);
+            var service = GetService(serviceName, cryptoCode);
             if (service == null)
                 return NotFound();
 
             ExternalConnectionString connectionString = null;
             try
             {
-                connectionString = await service.ConnectionString.Expand(this.Request.GetAbsoluteUriNoPathBase(), service.Type);
+                connectionString = await service.ConnectionString.Expand(this.Request.GetAbsoluteUriNoPathBase(), service.Type, _Options.NetworkType);
             }
             catch (Exception ex)
             {
@@ -638,6 +765,138 @@ namespace BTCPayServer.Controllers
             return RedirectToAction(nameof(Service), new { cryptoCode = cryptoCode, serviceName = serviceName, nonce = nonce });
         }
 
+
+        [Route("server/services/dynamic-dns")]
+        public async Task<IActionResult> DynamicDnsServices()
+        {
+            var settings = (await _SettingsRepository.GetSettingAsync<DynamicDnsSettings>()) ?? new DynamicDnsSettings();
+            return View(settings.Services.Select(s => new DynamicDnsViewModel()
+            {
+                Settings = s
+            }).ToArray());
+        }
+        [Route("server/services/dynamic-dns/{hostname}")]
+        public async Task<IActionResult> DynamicDnsServices(string hostname)
+        {
+            var settings = (await _SettingsRepository.GetSettingAsync<DynamicDnsSettings>()) ?? new DynamicDnsSettings();
+            var service = settings.Services.FirstOrDefault(s => s.Hostname.Equals(hostname, StringComparison.OrdinalIgnoreCase));
+            if (service == null)
+                return NotFound();
+            var vm = new DynamicDnsViewModel();
+            vm.Modify = true;
+            vm.Settings = service;
+            return View(nameof(DynamicDnsService), vm);
+        }
+        [Route("server/services/dynamic-dns")]
+        [HttpPost]
+        public async Task<IActionResult> DynamicDnsService(DynamicDnsViewModel viewModel, string command = null)
+        {
+            if (!ModelState.IsValid)
+            {
+                return View(viewModel);
+            }
+            if (command == "Save")
+            {
+                var settings = (await _SettingsRepository.GetSettingAsync<DynamicDnsSettings>()) ?? new DynamicDnsSettings();
+                var i = settings.Services.FindIndex(d => d.Hostname.Equals(viewModel.Settings.Hostname, StringComparison.OrdinalIgnoreCase));
+                if (i != -1)
+                {
+                    ModelState.AddModelError(nameof(viewModel.Settings.Hostname), "This hostname already exists");
+                    return View(viewModel);
+                }
+                if (viewModel.Settings.Hostname != null)
+                    viewModel.Settings.Hostname = viewModel.Settings.Hostname.Trim().ToLowerInvariant();
+                string errorMessage = await viewModel.Settings.SendUpdateRequest(HttpClientFactory.CreateClient());
+                if (errorMessage == null)
+                {
+                    StatusMessage = $"The Dynamic DNS has been successfully queried, your configuration is saved";
+                    viewModel.Settings.LastUpdated = DateTimeOffset.UtcNow;
+                    settings.Services.Add(viewModel.Settings);
+                    await _SettingsRepository.UpdateSetting(settings);
+                    return RedirectToAction(nameof(DynamicDnsServices));
+                }
+                else
+                {
+                    ModelState.AddModelError(string.Empty, errorMessage);
+                    return View(viewModel);
+                }
+            }
+            else
+            {
+                return View(new DynamicDnsViewModel() { Settings = new DynamicDnsService() });
+            }
+        }
+        [Route("server/services/dynamic-dns/{hostname}")]
+        [HttpPost]
+        public async Task<IActionResult> DynamicDnsService(DynamicDnsViewModel viewModel, string hostname, string command = null)
+        {
+            if (!ModelState.IsValid)
+            {
+                return View(viewModel);
+            }
+            var settings = (await _SettingsRepository.GetSettingAsync<DynamicDnsSettings>()) ?? new DynamicDnsSettings();
+            
+            var i = settings.Services.FindIndex(d => d.Hostname.Equals(hostname, StringComparison.OrdinalIgnoreCase));
+            if (i == -1)
+                return NotFound();
+            if (viewModel.Settings.Password == null)
+                viewModel.Settings.Password = settings.Services[i].Password;
+            if (viewModel.Settings.Hostname != null)
+                viewModel.Settings.Hostname = viewModel.Settings.Hostname.Trim().ToLowerInvariant();
+            if (!viewModel.Settings.Enabled)
+            {
+                StatusMessage = $"The Dynamic DNS service has been disabled";
+                viewModel.Settings.LastUpdated = null;
+            }
+            else
+            {
+                string errorMessage = await viewModel.Settings.SendUpdateRequest(HttpClientFactory.CreateClient());
+                if (errorMessage == null)
+                {
+                    StatusMessage = $"The Dynamic DNS has been successfully queried, your configuration is saved";
+                    viewModel.Settings.LastUpdated = DateTimeOffset.UtcNow;
+                }
+                else
+                {
+                    ModelState.AddModelError(string.Empty, errorMessage);
+                    return View(viewModel);
+                }
+            }
+            settings.Services[i] = viewModel.Settings;
+            await _SettingsRepository.UpdateSetting(settings);
+            this.RouteData.Values.Remove(nameof(hostname));
+            return RedirectToAction(nameof(DynamicDnsServices));
+        }
+        [HttpGet]
+        [Route("server/services/dynamic-dns/{hostname}/delete")]
+        public async Task<IActionResult> DeleteDynamicDnsService(string hostname)
+        {
+            var settings = (await _SettingsRepository.GetSettingAsync<DynamicDnsSettings>()) ?? new DynamicDnsSettings();
+            var i = settings.Services.FindIndex(d => d.Hostname.Equals(hostname, StringComparison.OrdinalIgnoreCase));
+            if (i == -1)
+                return NotFound();
+            return View("Confirm", new ConfirmModel()
+            {
+                Title = "Delete the dynamic dns service for " + hostname,
+                Description = "BTCPayServer will stop updating this DNS record periodically",
+                Action = "Delete"
+            });
+        }
+        [HttpPost]
+        [Route("server/services/dynamic-dns/{hostname}/delete")]
+        public async Task<IActionResult> DeleteDynamicDnsServicePost(string hostname)
+        {
+            var settings = (await _SettingsRepository.GetSettingAsync<DynamicDnsSettings>()) ?? new DynamicDnsSettings();
+            var i = settings.Services.FindIndex(d => d.Hostname.Equals(hostname, StringComparison.OrdinalIgnoreCase));
+            if (i == -1)
+                return NotFound();
+            settings.Services.RemoveAt(i);
+            await _SettingsRepository.UpdateSetting(settings);
+            StatusMessage = "Dynamic DNS service successfully removed";
+            this.RouteData.Values.Remove(nameof(hostname));
+            return RedirectToAction(nameof(DynamicDnsServices));
+        }
+
         [Route("server/services/ssh")]
         public IActionResult SSHService(bool downloadKeyFile = false)
         {
@@ -651,7 +910,7 @@ namespace BTCPayServer.Controllers
                 return File(System.IO.File.ReadAllBytes(settings.KeyFile), "application/octet-stream", "id_rsa");
             }
 
-            var server = IsLocalNetwork(settings.Server) ? this.Request.Host.Host: settings.Server;
+            var server = Extensions.IsLocalNetwork(settings.Server) ? this.Request.Host.Host : settings.Server;
             SSHServiceViewModel vm = new SSHServiceViewModel();
             string port = settings.Port == 22 ? "" : $" -p {settings.Port}";
             vm.CommandLine = $"ssh {settings.Username}@{server}{port}";
@@ -659,13 +918,6 @@ namespace BTCPayServer.Controllers
             vm.KeyFilePassword = settings.KeyFilePassword;
             vm.HasKeyFile = !string.IsNullOrEmpty(settings.KeyFile);
             return View(vm);
-        }
-
-        private static bool IsLocalNetwork(string server)
-        {
-            return server.EndsWith(".internal", StringComparison.OrdinalIgnoreCase) ||
-                   server.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase) ||
-                   server.Equals("localhost", StringComparison.OrdinalIgnoreCase);
         }
 
         [Route("server/theme")]
@@ -706,7 +958,8 @@ namespace BTCPayServer.Controllers
                 try
                 {
                     var client = model.Settings.CreateSmtpClient();
-                    await client.SendMailAsync(model.Settings.From, model.TestEmail, "BTCPay test", "BTCPay test");
+                    var message = model.Settings.CreateMailMessage(new MailAddress(model.TestEmail), "BTCPay test", "BTCPay test");
+                    await client.SendMailAsync(message);
                     model.StatusMessage = "Email sent to " + model.TestEmail + ", please, verify you received it";
                 }
                 catch (Exception ex)
@@ -758,14 +1011,16 @@ namespace BTCPayServer.Controllers
                     .ToList();
                 vm.LogFileOffset = offset;
 
-                if (string.IsNullOrEmpty(file))
+                if (string.IsNullOrEmpty(file) || !file.EndsWith(fileExtension, StringComparison.Ordinal))
                     return View("Logs", vm);
                 vm.Log = "";
-                var path = Path.Combine(di.FullName, file);
+                var fi = vm.LogFiles.FirstOrDefault(o => o.Name == file);
+                if (fi == null)
+                    return NotFound();
                 try
                 {
                     using (var fileStream = new FileStream(
-                        path,
+                        fi.FullName,
                         FileMode.Open,
                         FileAccess.Read,
                         FileShare.ReadWrite))

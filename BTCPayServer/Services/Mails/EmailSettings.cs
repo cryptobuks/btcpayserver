@@ -10,6 +10,7 @@ namespace BTCPayServer.Services.Mails
 {
     public class EmailSettings
     {
+        [Display(Name = "SMTP Server")]
         public string Server
         {
             get; set;
@@ -20,16 +21,24 @@ namespace BTCPayServer.Services.Mails
             get; set;
         }
 
-        public String Login
+        public string Login
+        {
+            get; set;
+        }
+        
+        public string Password
         {
             get; set;
         }
 
-        public String Password
+        [Display(Name = "Sender's display name")]
+        public string FromDisplay
         {
             get; set;
         }
+
         [EmailAddress]
+        [Display(Name = "Sender's email address")]
         public string From
         {
             get; set;
@@ -51,6 +60,17 @@ namespace BTCPayServer.Services.Mails
             }
             catch { }
             return false;
+        }
+
+        public MailMessage CreateMailMessage(MailAddress to, string subject, string message)
+        {
+            return new MailMessage(
+                from: new MailAddress(From, FromDisplay),
+                to: to)
+            {
+                Subject = subject,
+                Body = message
+            };
         }
 
         public SmtpClient CreateSmtpClient()

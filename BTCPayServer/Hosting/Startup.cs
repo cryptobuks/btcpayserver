@@ -1,42 +1,28 @@
 ﻿using Microsoft.AspNetCore.Hosting;
-using System.Reflection;
-using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using System;
-using System.Text;
 using Microsoft.Extensions.DependencyInjection;
-
-using Microsoft.AspNetCore.Mvc.ModelBinding.Validation;
-using Microsoft.AspNetCore.Mvc;
-using NBitpayClient;
-using BTCPayServer.Authentication;
-using Microsoft.EntityFrameworkCore;
 using BTCPayServer.Filters;
-using Microsoft.AspNetCore.Mvc.Infrastructure;
 using BTCPayServer.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.HttpOverrides;
 using BTCPayServer.Data;
 using Microsoft.Extensions.Logging;
 using BTCPayServer.Logging;
-using Microsoft.AspNetCore.Authorization;
-using System.Threading.Tasks;
-using BTCPayServer.Controllers;
-using BTCPayServer.Services.Stores;
-using BTCPayServer.Services.Mails;
 using Microsoft.Extensions.Configuration;
 using BTCPayServer.Configuration;
 using System.IO;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using System.Threading;
-using Microsoft.Extensions.Options;
-using Microsoft.AspNetCore.Mvc.Cors.Internal;
-using Microsoft.AspNetCore.Server.Kestrel.Core;
-using System.Net;
-using BTCPayServer.PaymentRequest;
-using Meziantou.AspNetCore.BundleTagHelpers;
+using AspNet.Security.OpenIdConnect.Primitives;
 using BTCPayServer.Security;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using OpenIddict.Abstractions;
+using OpenIddict.EntityFrameworkCore.Models;
+using System.Net;
+using BTCPayServer.Authentication.OpenId;
+using BTCPayServer.PaymentRequest;
 using BTCPayServer.Services.Apps;
+using BTCPayServer.Storage;
 
 namespace BTCPayServer.Hosting
 {
@@ -62,9 +48,14 @@ namespace BTCPayServer.Hosting
             services.AddMemoryCache();
             services.AddIdentity<ApplicationUser, IdentityRole>()
                 .AddEntityFrameworkStores<ApplicationDbContext>()
-                .AddDefaultTokenProviders();
+                .AddDefaultTokenProviders();      
+            
+            ConfigureOpenIddict(services);
+
+            services.AddBTCPayServer(Configuration);
+            services.AddProviderStorage();
+            services.AddSession();
             services.AddSignalR();
-            services.AddBTCPayServer();
             services.AddMvc(o =>
             {
                 o.Filters.Add(new XFrameOptionsAttribute("DENY"));
@@ -79,7 +70,7 @@ namespace BTCPayServer.Hosting
                 //    StyleSrc = "'self' 'unsafe-inline'",
                 //    ScriptSrc = "'self' 'unsafe-inline'"
                 //});
-            });
+            }).AddControllersAsServices();
             services.TryAddScoped<ContentSecurityPolicies>();
             services.Configure<IdentityOptions>(options =>
             {
@@ -91,11 +82,22 @@ namespace BTCPayServer.Hosting
                 options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(5);
                 options.Lockout.MaxFailedAccessAttempts = 5;
                 options.Lockout.AllowedForNewUsers = true;
+                options.Password.RequireUppercase = false;            
+                // Configure Identity to use the same JWT claims as OpenIddict instead
+                // of the legacy WS-Federation claims it uses by default (ClaimTypes),
+                // which saves you from doing the mapping in your authorization controller.
+                options.ClaimsIdentity.UserNameClaimType = OpenIdConnectConstants.Claims.Name;
+                options.ClaimsIdentity.UserIdClaimType = OpenIdConnectConstants.Claims.Subject;
+                options.ClaimsIdentity.RoleClaimType = OpenIdConnectConstants.Claims.Role;
             });
             // If the HTTPS certificate path is not set this logic will NOT be used and the default Kestrel binding logic will be.
             string httpsCertificateFilePath = Configuration.GetOrDefault<string>("HttpsCertificateFilePath", null);
             bool useDefaultCertificate = Configuration.GetOrDefault<bool>("HttpsUseDefaultCertificate", false);
             bool hasCertPath = !String.IsNullOrEmpty(httpsCertificateFilePath);
+            services.Configure<KestrelServerOptions>(kestrel =>
+            {
+                kestrel.Limits.MaxRequestLineSize = 8_192 * 10 * 5; // Around 500K, transactions passed in URI should not be bigger than this
+            });
             if (hasCertPath || useDefaultCertificate)
             {
                 var bindAddress = Configuration.GetOrDefault<IPAddress>("bind", IPAddress.Any);
@@ -130,6 +132,61 @@ namespace BTCPayServer.Hosting
             }
         }
 
+        private void ConfigureOpenIddict(IServiceCollection services)
+        {
+// Register the OpenIddict services.
+            services.AddOpenIddict()
+                .AddCore(options =>
+                {
+                    // Configure OpenIddict to use the Entity Framework Core stores and entities.
+                    options.UseEntityFrameworkCore()
+                        .UseDbContext<ApplicationDbContext>()
+                        .ReplaceDefaultEntities<BTCPayOpenIdClient, BTCPayOpenIdAuthorization, OpenIddictScope<string>,
+                            BTCPayOpenIdToken, string>();
+                })
+                .AddServer(options =>
+                {
+                    options.EnableRequestCaching();
+                    //Disabled so that Tor works with OpenIddict too
+                    options.DisableHttpsRequirement();
+                    // Register the ASP.NET Core MVC binder used by OpenIddict.
+                    // Note: if you don't call this method, you won't be able to
+                    // bind OpenIdConnectRequest or OpenIdConnectResponse parameters.
+                    options.UseMvc();
+
+                    // Enable the token endpoint (required to use the password flow).
+                    options.EnableTokenEndpoint("/connect/token");
+                    options.EnableAuthorizationEndpoint("/connect/authorize");
+                    options.EnableLogoutEndpoint("/connect/logout");
+
+                    //we do not care about these granular controls for now
+                    options.DisableScopeValidation();
+                    options.IgnoreEndpointPermissions();
+                    // Allow client applications various flows
+                    options.AllowImplicitFlow();
+                    options.AllowClientCredentialsFlow();
+                    options.AllowRefreshTokenFlow();
+                    options.AllowPasswordFlow();
+                    options.AllowAuthorizationCodeFlow();
+                    options.UseRollingTokens();
+                    options.UseJsonWebTokens();
+
+                    options.RegisterScopes(
+                        OpenIdConnectConstants.Scopes.OpenId,
+                        OpenIdConnectConstants.Scopes.OfflineAccess,
+                        OpenIdConnectConstants.Scopes.Email,
+                        OpenIdConnectConstants.Scopes.Profile,
+                        OpenIddictConstants.Scopes.Roles);
+                    options.AddEventHandler<PasswordGrantTypeEventHandler>();
+                    options.AddEventHandler<AuthorizationCodeGrantTypeEventHandler>();
+                    options.AddEventHandler<RefreshTokenGrantTypeEventHandler>();
+                    options.AddEventHandler<ClientCredentialsGrantTypeEventHandler>();
+                    options.AddEventHandler<LogoutEventHandler>();
+
+                    options.ConfigureSigningKey(Configuration);
+                });
+        }
+
         public void Configure(
             IApplicationBuilder app,
             IHostingEnvironment env,
@@ -157,6 +214,8 @@ namespace BTCPayServer.Hosting
             {
                 app.UseDeveloperExceptionPage();
             }
+            
+            app.UseCors();
 
             var forwardingOptions = new ForwardedHeadersOptions()
             {
@@ -169,7 +228,9 @@ namespace BTCPayServer.Hosting
             app.UseCors();
             app.UsePayServer();
             app.UseStaticFiles();
+            app.UseProviderStorage(options);
             app.UseAuthentication();
+            app.UseSession();
             app.UseSignalR(route =>
             {
                 AppHub.Register(route);
