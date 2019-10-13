@@ -19,6 +19,10 @@ using NBXplorer.Models;
 using BTCPayServer.Payments;
 using BTCPayServer.HostedServices;
 
+#if NETCOREAPP21
+using IHostApplicationLifetime = Microsoft.AspNetCore.Hosting.IApplicationLifetime;
+#endif
+
 namespace BTCPayServer.Payments.Bitcoin
 {
     /// <summary>
@@ -28,7 +32,7 @@ namespace BTCPayServer.Payments.Bitcoin
     {
         EventAggregator _Aggregator;
         ExplorerClientProvider _ExplorerClients;
-        Microsoft.Extensions.Hosting.IApplicationLifetime _Lifetime;
+        IHostApplicationLifetime _Lifetime;
         InvoiceRepository _InvoiceRepository;
         private TaskCompletionSource<bool> _RunningTask;
         private CancellationTokenSource _Cts;
@@ -38,7 +42,7 @@ namespace BTCPayServer.Payments.Bitcoin
                                 BTCPayWalletProvider wallets,
                                 InvoiceRepository invoiceRepository,
                                 EventAggregator aggregator, 
-                                Microsoft.Extensions.Hosting.IApplicationLifetime lifetime)
+                                IHostApplicationLifetime lifetime)
         {
             PollInterval = TimeSpan.FromMinutes(1.0);
             _Wallets = wallets;
@@ -149,7 +153,8 @@ namespace BTCPayServer.Payments.Bitcoin
                                     foreach (var txCoin in evt.TransactionData.Transaction.Outputs.AsCoins()
                                                                                 .Where(o => o.ScriptPubKey == output.ScriptPubKey))
                                     {
-                                        var invoice = await _InvoiceRepository.GetInvoiceFromScriptPubKey(output.ScriptPubKey, network.CryptoCode);
+                                        var key = output.ScriptPubKey.Hash + "#" + network.CryptoCode;
+                                        var invoice = (await _InvoiceRepository.GetInvoicesFromAddresses(new [] {key})).FirstOrDefault();
                                         if (invoice != null)
                                         {
                                             var paymentData = new BitcoinLikePaymentData(txCoin, evt.TransactionData.Transaction.RBF);

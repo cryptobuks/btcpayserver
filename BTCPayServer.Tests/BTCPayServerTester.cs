@@ -1,4 +1,4 @@
-using BTCPayServer.Configuration;
+﻿using BTCPayServer.Configuration;
 using System.Linq;
 using BTCPayServer.HostedServices;
 using BTCPayServer.Hosting;
@@ -13,7 +13,6 @@ using BTCPayServer.Tests.Logging;
 using BTCPayServer.Tests.Mocks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Internal;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Routing;
@@ -33,7 +32,11 @@ using System.Security.Claims;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
+#if NETCOREAPP21
 using AspNet.Security.OpenIdConnect.Primitives;
+#else
+using OpenIdConnectConstants = OpenIddict.Abstractions.OpenIddictConstants;
+#endif
 using Xunit;
 using BTCPayServer.Services;
 using System.Net.Http;
@@ -93,7 +96,7 @@ namespace BTCPayServer.Tests
 
         public bool MockRates { get; set; } = true;
 
-        public void Start()
+        public async Task StartAsync()
         {
             if (!Directory.Exists(_Directory))
                 Directory.CreateDirectory(_Directory);
@@ -130,7 +133,7 @@ namespace BTCPayServer.Tests
             else if (!String.IsNullOrEmpty(Postgres))
                 config.AppendLine($"postgres=" + Postgres);
             var confPath = Path.Combine(chainDirectory, "settings.config");
-            File.WriteAllText(confPath, config.ToString());
+            await File.WriteAllTextAsync(confPath, config.ToString());
 
             ServerUri = new Uri("http://" + HostName + ":" + Port + "/");
             HttpClient = new HttpClient();
@@ -140,6 +143,7 @@ namespace BTCPayServer.Tests
             _Host = new WebHostBuilder()
                     .UseConfiguration(conf)
                     .UseContentRoot(FindBTCPayServerDirectory())
+                    .UseWebRoot(Path.Combine(FindBTCPayServerDirectory(), "wwwroot"))
                     .ConfigureServices(s =>
                     {
                         s.AddLogging(l =>
@@ -154,7 +158,7 @@ namespace BTCPayServer.Tests
                     .UseKestrel()
                     .UseStartup<Startup>()
                     .Build();
-            _Host.StartWithTasksAsync().GetAwaiter().GetResult();
+            await _Host.StartWithTasksAsync();
 
             var urls = _Host.ServerFeatures.Get<IServerAddressesFeature>().Addresses;
             foreach (var url in urls)
@@ -229,12 +233,12 @@ namespace BTCPayServer.Tests
 
             
 
-            WaitSiteIsOperational().GetAwaiter().GetResult();
+            await WaitSiteIsOperational();
         }
 
         private async Task WaitSiteIsOperational()
         {
-            using (var cts = new CancellationTokenSource(10_000))
+            using (var cts = new CancellationTokenSource(20_000))
             {
                 var synching = WaitIsFullySynched(cts.Token);
                 var accessingHomepage = WaitCanAccessHomepage(cts.Token);
@@ -264,7 +268,7 @@ namespace BTCPayServer.Tests
 
         private string FindBTCPayServerDirectory()
         {
-            var solutionDirectory = LanguageService.TryGetSolutionDirectoryInfo(Directory.GetCurrentDirectory());
+            var solutionDirectory = TestUtils.TryGetSolutionDirectoryInfo(Directory.GetCurrentDirectory());
             return Path.Combine(solutionDirectory.FullName, "BTCPayServer");
         }
 

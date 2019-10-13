@@ -4,6 +4,7 @@ using System.Linq;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.Tasks;
+using BTCPayServer.Authentication;
 using BTCPayServer.Payments;
 using BTCPayServer.Security;
 using BTCPayServer.Services.Rates;
@@ -108,7 +109,7 @@ namespace BTCPayServer.Data
                 foreach (var strat in strategies.Properties())
                 {
                     var paymentMethodId = PaymentMethodId.Parse(strat.Name);
-                    var network = networks.GetNetwork<BTCPayNetwork>(paymentMethodId.CryptoCode);
+                    var network = networks.GetNetwork<BTCPayNetworkBase>(paymentMethodId.CryptoCode);
                     if (network != null)
                     {
                         if (network == networks.BTC && paymentMethodId.PaymentType == PaymentTypes.BTCLike && btcReturned)

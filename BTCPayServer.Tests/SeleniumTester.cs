@@ -40,9 +40,9 @@ namespace BTCPayServer.Tests
         }
 
       
-        public void Start()
+        public async Task StartAsync()
         {
-            Server.Start();
+            await Server.StartAsync();
             ChromeOptions options = new ChromeOptions();
             var isDebug = !Server.PayTester.InContainer;
         
@@ -77,7 +77,7 @@ namespace BTCPayServer.Tests
 
         public string RegisterNewUser(bool isAdmin = false)
         {
-            var usr = RandomUtils.GetUInt256().ToString() + "@a.com";
+            var usr = RandomUtils.GetUInt256().ToString().Substring(64 - 20) + "@a.com";
             Driver.FindElement(By.Id("Register")).Click();
             Driver.FindElement(By.Id("Email")).SendKeys(usr);
             Driver.FindElement(By.Id("Password")).SendKeys("123456");
